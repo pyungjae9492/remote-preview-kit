@@ -3,6 +3,7 @@
 // allow: SIZE_OK - single-file zero-dependency CLI; split when adding another command.
 
 import { spawn } from 'node:child_process';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { access, readFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import http from 'node:http';
@@ -20,6 +21,7 @@ const EXIT = {
   NO_URL: 71,
   START_FAILED: 72,
   SETUP_FAILED: 73,
+  AUTH_PROXY_FAILED: 74,
 };
 
 const RISKY_PORTS = new Set([
@@ -33,6 +35,8 @@ const COMMON_PORTS = Object.freeze([
   5173, 3000, 3001, 3002, 3003, 3004, 4173, 4321, 5000, 5174, 8000, 8080, 8787,
 ]);
 const AUTO_DETECT_TIMEOUT_MS = 300;
+const AUTH_QUERY = 'remote_preview_token';
+const AUTH_COOKIE = 'remote_preview_token';
 
 function help() {
   return `remote-preview
@@ -49,6 +53,8 @@ If no server responds, package.json's dev script is started when present.
 
 Options:
   --provider <auto|codespaces|cloudflared|ngrok>  Provider to use
+  --auth                                        Protect preview with a generated token
+  --auth-token <token>                          Protect preview with this token
   --yes                                         Confirm setup install prompts
   --public                                      Allow public tunnel providers
   --json                                        Print machine-readable JSON
@@ -91,6 +97,8 @@ function parseArgs(argv) {
     else if (arg === '--port') options.port = parsePort(value());
     else if (arg === '--url') options.url = value();
     else if (arg === '--provider') options.provider = value();
+    else if (arg === '--auth') options.auth = true;
+    else if (arg === '--auth-token') options.authToken = value();
     else if (arg === '--yes') options.yes = true;
     else if (arg === '--public') options.public = true;
     else if (arg === '--json') options.json = true;
@@ -109,6 +117,22 @@ function parseArgs(argv) {
   if (options.notifyCmd && /\s/.test(options.notifyCmd)) {
     throw appError('NOTIFY_INVALID', '--notify-cmd must be one program path without whitespace', EXIT.NOTIFY_FAILED, options);
   }
+  return options;
+}
+
+function parseProxyArgs(argv) {
+  const options = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    const next = () => {
+      i += 1;
+      return argv[i];
+    };
+    if (arg === '--upstream-port') options.upstreamPort = parsePort(next());
+    else if (arg === '--token') options.authToken = next();
+  }
+  options.authToken ??= process.env.REMOTE_PREVIEW_AUTH_PROXY_TOKEN;
+  if (!options.upstreamPort || !options.authToken) throw usage('auth-proxy requires --upstream-port and --token');
   return options;
 }
 
@@ -336,6 +360,80 @@ function attachStartedServer(result, options) {
   };
 }
 
+async function startAuthProxy(options) {
+  const token = previewToken(options);
+  if (!token) return;
+  const child = spawn(process.execPath, [process.argv[1], 'auth-proxy', '--upstream-port', String(options.port)], {
+    cwd: process.cwd(),
+    detached: true,
+    env: { ...process.env, REMOTE_PREVIEW_AUTH_PROXY_TOKEN: token },
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  const proxy = await new Promise((resolve, reject) => {
+    let output = '';
+    const timer = setTimeout(() => reject(appError('AUTH_PROXY_FAILED', 'auth proxy did not start before timeout', EXIT.AUTH_PROXY_FAILED, options)), 2000);
+    child.stdout.on('data', (chunk) => {
+      output += chunk;
+      const line = output.split(/\r?\n/).find(Boolean);
+      if (!line) return;
+      clearTimeout(timer);
+      try {
+        const payload = JSON.parse(line);
+        child.stdout.destroy();
+        child.unref();
+        resolve({ pid: child.pid, port: payload.port, token });
+      } catch (error) {
+        reject(appError('AUTH_PROXY_FAILED', error.message, EXIT.AUTH_PROXY_FAILED, options));
+      }
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(appError('AUTH_PROXY_FAILED', error.message, EXIT.AUTH_PROXY_FAILED, options));
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(appError('AUTH_PROXY_FAILED', `auth proxy exited ${code}`, EXIT.AUTH_PROXY_FAILED, options));
+    });
+  });
+  options.upstreamPort = options.port;
+  options.port = proxy.port;
+  options.authProxy = proxy;
+}
+
+function previewToken(options) {
+  if (options.authToken) return options.authToken;
+  if (process.env.REMOTE_PREVIEW_TOKEN) return process.env.REMOTE_PREVIEW_TOKEN;
+  if (options.auth) return randomBytes(24).toString('base64url');
+  return null;
+}
+
+function cleanupAuthProxy(authProxy) {
+  if (!authProxy?.pid) return;
+  try {
+    process.kill(-authProxy.pid, 'SIGTERM');
+  } catch {
+    try {
+      process.kill(authProxy.pid, 'SIGTERM');
+    } catch {}
+  }
+}
+
+function attachAuthProxy(result, options) {
+  const proxy = options.authProxy;
+  if (!proxy) return result;
+  const url = new URL(result.url);
+  url.searchParams.set(AUTH_QUERY, proxy.token);
+  const authCleanup = `kill -TERM -${proxy.pid}`;
+  return {
+    ...result,
+    url: url.toString(),
+    auth: true,
+    authProxyPid: proxy.pid,
+    upstreamPort: options.upstreamPort,
+    cleanup: result.cleanup ? `${authCleanup}; ${result.cleanup}` : authCleanup,
+  };
+}
+
 async function assertLocalReady(options) {
   if (options.dryRun) return;
   if (options.provider === 'codespaces') return;
@@ -526,11 +624,12 @@ async function runProvider(options) {
   try {
     guard(options);
     await assertLocalReady(options);
-    if (options.provider === 'codespaces') return attachStartedServer(await runCodespaces(options), options);
+    await startAuthProxy(options);
+    if (options.provider === 'codespaces') return attachAuthProxy(attachStartedServer(await runCodespaces(options), options), options);
     if (options.provider === 'auto') {
       const url = codespacesUrl(options.port);
       if (url) {
-        return attachStartedServer({
+        return attachAuthProxy(attachStartedServer({
           ok: true,
           provider: 'codespaces',
           url,
@@ -538,23 +637,119 @@ async function runProvider(options) {
           public: false,
           pid: null,
           cleanup: null,
-        }, options);
+        }, options), options);
       }
       if (!options.public) {
         throw appError('PUBLIC_REQUIRED', 'no private forwarded URL detected; pass --public to use cloudflared or ngrok', EXIT.PUBLIC_REQUIRED, options);
       }
       try {
-        return attachStartedServer(await runSpawnProvider('cloudflared', { ...options, provider: 'cloudflared' }), options);
+        return attachAuthProxy(attachStartedServer(await runSpawnProvider('cloudflared', { ...options, provider: 'cloudflared' }), options), options);
       } catch (error) {
         if (error.remotePreview?.error?.code !== 'PROVIDER_MISSING') throw error;
-        return attachStartedServer(await runSpawnProvider('ngrok', { ...options, provider: 'ngrok' }), options);
+        return attachAuthProxy(attachStartedServer(await runSpawnProvider('ngrok', { ...options, provider: 'ngrok' }), options), options);
       }
     }
-    return attachStartedServer(await runSpawnProvider(options.provider, options), options);
+    return attachAuthProxy(attachStartedServer(await runSpawnProvider(options.provider, options), options), options);
   } catch (error) {
+    cleanupAuthProxy(options.authProxy);
     cleanupStartedServer(options.startedServer);
     throw error;
   }
+}
+
+function runAuthProxy(options) {
+  const server = http.createServer((request, response) => {
+    if (!authorized(request, options.authToken)) {
+      response.writeHead(401, { 'content-type': 'text/plain' });
+      response.end('missing or invalid preview token');
+      return;
+    }
+    const requestUrl = new URL(request.url, 'http://127.0.0.1');
+    if (requestUrl.searchParams.get(AUTH_QUERY)) {
+      requestUrl.searchParams.delete(AUTH_QUERY);
+      response.writeHead(302, {
+        'set-cookie': `${AUTH_COOKIE}=${encodeURIComponent(options.authToken)}; HttpOnly; SameSite=Lax; Path=/`,
+        location: `${requestUrl.pathname}${requestUrl.search}`,
+      });
+      response.end();
+      return;
+    }
+    proxyHttp(request, response, options.upstreamPort);
+  });
+  server.on('upgrade', (request, socket, head) => {
+    if (!authorized(request, options.authToken)) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    proxyUpgrade(request, socket, head, options.upstreamPort);
+  });
+  server.listen(0, '127.0.0.1', () => {
+    process.stdout.write(`${JSON.stringify({ port: server.address().port })}\n`);
+  });
+  process.on('SIGTERM', () => server.close(() => process.exit(0)));
+}
+
+function authorized(request, token) {
+  const requestUrl = new URL(request.url, 'http://127.0.0.1');
+  const supplied = requestUrl.searchParams.get(AUTH_QUERY)
+    ?? request.headers['x-remote-preview-token']
+    ?? cookieValue(request.headers.cookie, AUTH_COOKIE);
+  return safeEqual(String(supplied ?? ''), token);
+}
+
+function cookieValue(header, name) {
+  const value = header?.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
+  if (!value) return null;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function safeEqual(actual, expected) {
+  const left = Buffer.from(actual);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function proxyHttp(request, response, port) {
+  const proxy = http.request({
+    host: '127.0.0.1',
+    port,
+    path: request.url,
+    method: request.method,
+    headers: { ...request.headers, host: `127.0.0.1:${port}` },
+  }, (upstream) => {
+    response.writeHead(upstream.statusCode ?? 502, upstream.headers);
+    upstream.pipe(response);
+  });
+  proxy.on('error', () => {
+    response.writeHead(502, { 'content-type': 'text/plain' });
+    response.end('upstream unavailable');
+  });
+  request.pipe(proxy);
+}
+
+function proxyUpgrade(request, socket, head, port) {
+  const proxy = http.request({
+    host: '127.0.0.1',
+    port,
+    path: request.url,
+    method: request.method,
+    headers: { ...request.headers, host: `127.0.0.1:${port}` },
+  });
+  proxy.on('upgrade', (response, proxySocket, proxyHead) => {
+    socket.write(`HTTP/${response.httpVersion} ${response.statusCode} ${response.statusMessage}\r\n`);
+    for (const [name, value] of Object.entries(response.headers)) socket.write(`${name}: ${value}\r\n`);
+    socket.write('\r\n');
+    if (proxyHead.length) socket.write(proxyHead);
+    if (head.length) proxySocket.write(head);
+    proxySocket.pipe(socket).pipe(proxySocket);
+  });
+  proxy.on('error', () => socket.destroy());
+  proxy.end();
 }
 
 async function notify(result, options) {
@@ -652,6 +847,10 @@ function outputSetup(result, options) {
 async function main() {
   let options = {};
   try {
+    if (process.argv[2] === 'auth-proxy') {
+      runAuthProxy(parseProxyArgs(process.argv.slice(3)));
+      return;
+    }
     options = parseArgs(process.argv.slice(2));
     if (options.help) {
       process.stdout.write(help());

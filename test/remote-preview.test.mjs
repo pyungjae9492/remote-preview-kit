@@ -81,6 +81,22 @@ async function withHttpServer(port, fn) {
   }
 }
 
+async function requestLocal(port, path, headers = {}) {
+  return await new Promise((resolveRequest, rejectRequest) => {
+    const request = http.request({ host: '127.0.0.1', port, path, headers }, (response) => {
+      let body = '';
+      response.on('data', (chunk) => {
+        body += chunk;
+      });
+      response.on('end', () => {
+        resolveRequest({ statusCode: response.statusCode, headers: response.headers, body });
+      });
+    });
+    request.on('error', rejectRequest);
+    request.end();
+  });
+}
+
 async function unusedPort() {
   const server = http.createServer();
   await new Promise((resolveListen) => {
@@ -215,6 +231,41 @@ test('starts package dev script when no localhost dev server responds', async ()
     if (payload?.devServerPid) stopProcessGroup(payload.devServerPid);
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('auth token proxy blocks requests until token sets cookie', async () => {
+  let payload;
+  await withHttpServer(0, async (port) => {
+    try {
+      const result = await run([
+        '--port',
+        String(port),
+        '--provider',
+        'cloudflared',
+        '--public',
+        '--json',
+        '--auth-token',
+        'secret-token',
+      ], { env: fixtureEnv() });
+      assert.equal(result.code, 0);
+      payload = JSON.parse(result.stdout);
+      assert.equal(payload.upstreamPort > 0, true);
+      assert.match(payload.url, /remote_preview_token=secret-token/);
+
+      const blocked = await requestLocal(payload.port, '/');
+      assert.equal(blocked.statusCode, 401);
+
+      const login = await requestLocal(payload.port, '/?remote_preview_token=secret-token');
+      assert.equal(login.statusCode, 302);
+      const cookie = login.headers['set-cookie'][0].split(';')[0];
+
+      const allowed = await requestLocal(payload.port, '/', { cookie });
+      assert.equal(allowed.statusCode, 200);
+      assert.equal(allowed.body, 'ok /');
+    } finally {
+      if (payload?.authProxyPid) stopProcessGroup(payload.authProxyPid);
+    }
+  });
 });
 
 test('setup dry-run prints provider install command as JSON', async () => {

@@ -21,11 +21,12 @@ remote coding environment.
    ```
 4. For public review URLs, require explicit public intent:
    ```sh
-   remote-preview --provider cloudflared --public --json
+   remote-preview --provider cloudflared --public --auth --json
    ```
 5. If multiple dev servers are running, pass the intended `--port` or `--url`.
    If the project has no npm `dev` script, pass `--start-cmd`.
-6. Return only the preview URL to the user unless they need diagnostics.
+6. For public tunnels, prefer `--auth` or `--auth-token` and share only the
+   tokenized URL with the intended reviewer.
 7. Record the cleanup command or PID in your task notes.
 
 ## Safety Rules
@@ -34,6 +35,8 @@ remote coding environment.
   unless the user explicitly requests it and `--allow-risky-port` is required.
 - Do not add `--public` silently. Public tunnels are visible to anyone with the
   URL.
+- `--auth` is link-token access control, not identity auth. Anyone with the
+  tokenized URL can use it until the preview is restarted.
 - Do not read or store provider tokens, Telegram bot tokens, `.env` files,
   cookies, or application secrets.
 - Codespaces support is read-only. Do not run `gh codespace ports visibility`
@@ -44,7 +47,7 @@ remote coding environment.
 Use `--json` for automation. The success object includes:
 
 ```json
-{"ok":true,"provider":"cloudflared","url":"https://example.trycloudflare.com","port":5173,"public":true,"pid":1234,"cleanup":"kill 1234"}
+{"ok":true,"provider":"cloudflared","url":"https://example.trycloudflare.com/?remote_preview_token=secret","port":5173,"public":true,"auth":true,"pid":1234,"cleanup":"kill 1234"}
 ```
 
 For Telegram Hermes-style notification hooks, pass the URL through

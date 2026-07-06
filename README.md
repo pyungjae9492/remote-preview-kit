@@ -49,7 +49,7 @@ remote-preview --help
 From your app directory:
 
 ```sh
-remote-preview --provider cloudflared --public
+remote-preview --provider cloudflared --public --auth
 ```
 
 The first non-empty line is the URL:
@@ -61,7 +61,7 @@ https://example.trycloudflare.com
 If you do not install the binary, run the same command through Node:
 
 ```sh
-node bin/remote-preview.mjs --provider cloudflared --public
+node bin/remote-preview.mjs --provider cloudflared --public --auth
 ```
 
 When `--port` and `--url` are omitted, the CLI scans common HTTP dev-server
@@ -95,6 +95,7 @@ It is intentionally small:
 - No hosted service.
 - No provider SDKs.
 - Public tunnels require explicit `--public`.
+- Optional token proxy with `--auth` or `--auth-token`.
 - Common database and admin ports are blocked by default.
 - Codespaces support is read-only and never changes port visibility.
 
@@ -110,7 +111,7 @@ remote-preview setup --provider ngrok --yes
 Machine-readable output:
 
 ```sh
-remote-preview --provider cloudflared --public --json
+remote-preview --provider cloudflared --public --auth --json
 ```
 
 Use a localhost URL instead of a port:
@@ -118,6 +119,19 @@ Use a localhost URL instead of a port:
 ```sh
 remote-preview --url http://127.0.0.1:5173 --provider cloudflared --public
 ```
+
+Protect the public preview with a token:
+
+```sh
+remote-preview --provider cloudflared --public --auth
+remote-preview --provider cloudflared --public --auth-token "$REMOTE_PREVIEW_TOKEN"
+```
+
+`--auth` generates a token and appends it to the returned URL. The first request
+sets an HttpOnly cookie and redirects to the same URL without the token query.
+Requests without the token or cookie receive `401`. This is link-token access
+control, not identity auth; anyone who gets the token URL can use it until you
+restart the preview with a new token.
 
 Notify another process:
 
@@ -193,7 +207,8 @@ For Codex mobile, Claude mobile, or Telegram Hermes-style agents:
 1. Run `remote-preview` from the app directory.
 2. Pass `--port` when multiple servers are running, or `--start-cmd` when the
    project does not have an npm `dev` script.
-3. Return the `url` field or the first stdout line to the user.
+3. Prefer `--auth` for public tunnels and return the tokenized `url` field or
+   the first stdout line only to the intended reviewer.
 4. Keep the cleanup command/PID in the task notes.
 
 Most dev-server live reload and WebSocket-based HMR continue to work because the
