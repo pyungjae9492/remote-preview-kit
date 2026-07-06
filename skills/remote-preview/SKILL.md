@@ -14,7 +14,8 @@ remote coding environment.
    `remote-preview setup --provider cloudflared --yes`.
 2. Run from the app directory. The CLI auto-detects common HTTP dev-server
    ports when `--port` and `--url` are omitted. If no server responds and
-   `package.json` has `scripts.dev`, it starts `npm run dev`.
+   `package.json` has `scripts.dev`, it starts the package manager's dev
+   script (`pnpm run dev`, `npm run dev`, `yarn run dev`, or `bun run dev`).
 3. Prefer private platform forwarding when available:
    ```sh
    remote-preview --provider codespaces --json
@@ -24,7 +25,7 @@ remote coding environment.
    remote-preview --provider cloudflared --public --auth --json
    ```
 5. If multiple dev servers are running, pass the intended `--port` or `--url`.
-   If the project has no npm `dev` script, pass `--start-cmd`.
+   If the project has no package `dev` script, pass `--start-cmd`.
 6. For public tunnels, prefer `--auth` or `--auth-token` and share only the
    tokenized URL with the intended reviewer.
 7. Record the cleanup command or PID in your task notes.

@@ -17,10 +17,12 @@ const server = http.createServer((request, response) => {
   response.end('remote-preview fixture');
 });
 
-server.listen(port, '127.0.0.1', () => {
-  const address = server.address();
-  console.log(`listening ${address.port}`);
-});
+setTimeout(() => {
+  server.listen(port, '127.0.0.1', () => {
+    const address = server.address();
+    console.log(`listening ${address.port}`);
+  });
+}, Number(process.env.LOCAL_SERVER_DELAY_MS ?? 0));
 
 process.on('SIGTERM', () => {
   server.close(() => process.exit(0));

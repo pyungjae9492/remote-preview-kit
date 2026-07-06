@@ -275,6 +275,73 @@ test('starts package dev script when no localhost dev server responds', async ()
   }
 });
 
+test('starts pnpm package dev script when packageManager is pnpm', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'remote-preview-pnpm-start-'));
+  const binDir = await mkdtemp(join(tmpdir(), 'remote-preview-pnpm-bin-'));
+  const record = join(dir, 'pnpm-argv.json');
+  const pnpm = join(binDir, 'pnpm');
+  const port = await unusedPort();
+  let payload;
+  try {
+    await writeFile(join(dir, 'package.json'), JSON.stringify({
+      packageManager: 'pnpm@11.9.0',
+      scripts: {
+        dev: `"${process.execPath}" "${join(fixtures, 'local-server.mjs')}" ${port}`,
+      },
+    }));
+    await writeFile(pnpm, `#!/usr/bin/env node
+const { readFileSync, writeFileSync } = require('node:fs');
+const { spawn } = require('node:child_process');
+const { join } = require('node:path');
+writeFileSync(${JSON.stringify(record)}, JSON.stringify(process.argv.slice(2)));
+const manifest = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8'));
+const child = spawn(manifest.scripts.dev, { shell: true, stdio: 'ignore' });
+process.on('SIGTERM', () => child.kill('SIGTERM'));
+child.on('exit', (code, signal) => process.exit(signal ? 1 : code ?? 0));
+`);
+    await chmod(pnpm, 0o755);
+    const result = await run(['--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '5000'], {
+      cwd: dir,
+      env: {
+        ...fixtureEnv(),
+        PATH: `${binDir}:${fixturePathEnv()}`,
+        REMOTE_PREVIEW_PORTS: String(port),
+      },
+    });
+    assert.equal(result.code, 0);
+    payload = JSON.parse(result.stdout);
+    assert.deepEqual(JSON.parse(await readFile(record, 'utf8')), ['run', 'dev']);
+    assert.equal(payload.port, port);
+  } finally {
+    if (payload?.devServerPid) stopProcessGroup(payload.devServerPid);
+    await rm(dir, { recursive: true, force: true });
+    await rm(binDir, { recursive: true, force: true });
+  }
+});
+
+test('waits longer for package dev script startup than provider URL timeout', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'remote-preview-slow-start-'));
+  const port = await unusedPort();
+  const command = `"${process.execPath}" "${join(fixtures, 'local-server.mjs')}" ${port}`;
+  let payload;
+  try {
+    await writeFile(join(dir, 'package.json'), JSON.stringify({ scripts: { dev: command } }));
+    const result = await run(['--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '500'], {
+      cwd: dir,
+      env: fixtureEnv({
+        LOCAL_SERVER_DELAY_MS: '1200',
+        REMOTE_PREVIEW_PORTS: String(port),
+      }),
+    });
+    assert.equal(result.code, 0);
+    payload = JSON.parse(result.stdout);
+    assert.equal(payload.port, port);
+  } finally {
+    if (payload?.devServerPid) stopProcessGroup(payload.devServerPid);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('auth token proxy blocks requests until token sets cookie', async () => {
   let payload;
   await withHttpServer(0, async (port) => {

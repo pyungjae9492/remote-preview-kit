@@ -36,6 +36,7 @@ const COMMON_PORTS = Object.freeze([
   5173, 3000, 3001, 3002, 3003, 3004, 4173, 4321, 5000, 5174, 8000, 8080, 8787,
 ]);
 const AUTO_DETECT_TIMEOUT_MS = 300;
+const DEV_SERVER_START_TIMEOUT_MS = 60000;
 const AUTH_QUERY = 'remote_preview_token';
 const AUTH_COOKIE = 'remote_preview_token';
 
@@ -293,7 +294,7 @@ async function startDevServerAndWait(options, ports) {
   const startCmd = await devServerStartCmd(options);
   if (!startCmd) return null;
   options.startedServer = startDevServer(startCmd);
-  const detectedPort = await waitForLocalPort(ports, options);
+  const detectedPort = await waitForLocalPort(ports, options, DEV_SERVER_START_TIMEOUT_MS);
   if (detectedPort) return detectedPort;
   cleanupStartedServer(options.startedServer);
   throw appError(
@@ -308,11 +309,25 @@ async function devServerStartCmd(options) {
   if (options.startCmd) return options.startCmd;
   try {
     const manifest = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8'));
-    if (manifest?.scripts?.dev) return 'npm run dev';
+    if (manifest?.scripts?.dev) return devScriptCommand(manifest);
   } catch {
     return null;
   }
   return null;
+}
+
+function devScriptCommand(manifest) {
+  const manager = packageManagerName(manifest.packageManager);
+  if (manager === 'pnpm') return 'pnpm run dev';
+  if (manager === 'yarn') return 'yarn run dev';
+  if (manager === 'bun') return 'bun run dev';
+  return 'npm run dev';
+}
+
+function packageManagerName(packageManager) {
+  if (typeof packageManager !== 'string') return 'npm';
+  const [name] = packageManager.split('@');
+  return name || 'npm';
 }
 
 function startDevServer(command) {
@@ -332,13 +347,13 @@ function startDevServer(command) {
   return started;
 }
 
-async function waitForLocalPort(ports, options) {
-  const deadline = Date.now() + options.timeoutMs;
-  const timeoutMs = Math.min(options.timeoutMs, AUTO_DETECT_TIMEOUT_MS);
+async function waitForLocalPort(ports, options, timeoutMs = options.timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  const probeTimeoutMs = Math.min(timeoutMs, AUTO_DETECT_TIMEOUT_MS);
   while (Date.now() < deadline) {
     if (options.startedServer?.exited) return null;
     for (const port of ports) {
-      if (await probeLocalhost(port, timeoutMs)) return port;
+      if (await probeLocalhost(port, probeTimeoutMs)) return port;
     }
   }
   return null;

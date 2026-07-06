@@ -67,8 +67,10 @@ node bin/remote-preview.mjs --provider cloudflared --public --auth
 When `--port` and `--url` are omitted, the CLI scans common HTTP dev-server
 ports such as `5173`, `3000`, `3001`, `4173`, `4321`, `8000`, and `8080`. If no
 server responds and the current project has `scripts.dev`, it starts
-`npm run dev`, waits for a port to respond, then exposes it. If more than one
-dev server is running, pass `--port` or `--url` explicitly.
+the package manager's `dev` script (`pnpm run dev`, `npm run dev`, `yarn run
+dev`, or `bun run dev`), waits up to 60 seconds for a port to respond, then
+exposes it. If more than one dev server is running, pass `--port` or `--url`
+explicitly.
 
 To customize the scan order:
 
@@ -76,7 +78,7 @@ To customize the scan order:
 REMOTE_PREVIEW_PORTS=3000,5173 remote-preview --provider cloudflared --public
 ```
 
-For projects without an npm `dev` script, pass the command to start:
+For projects without a package `dev` script, pass the command to start:
 
 ```sh
 remote-preview --start-cmd "python3 -m http.server 8000" --provider cloudflared --public
