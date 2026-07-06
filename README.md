@@ -13,20 +13,20 @@ URL to a user on mobile.
 Run the one-time provider setup from any app directory:
 
 ```sh
-npx github:pyungjae9492/remote-preview-kit setup
+npx remote-preview-kit setup
 ```
 
 It lets you choose `cloudflared` or `ngrok` and installs the selected provider
 with Homebrew on macOS. For non-interactive setup:
 
 ```sh
-npx github:pyungjae9492/remote-preview-kit setup --provider cloudflared --yes
+npx remote-preview-kit setup --provider cloudflared --yes
 ```
 
 Install directly from GitHub:
 
 ```sh
-npm install -g github:pyungjae9492/remote-preview-kit
+npm install -g remote-preview-kit
 ```
 
 Or clone and run from source:

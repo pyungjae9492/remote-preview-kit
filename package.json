@@ -3,8 +3,30 @@
   "version": "0.1.0",
   "description": "Agent-friendly localhost preview launcher for existing tunnel providers.",
   "type": "module",
+  "keywords": [
+    "localhost",
+    "preview",
+    "tunnel",
+    "cloudflared",
+    "ngrok",
+    "codex"
+  ],
+  "homepage": "https://github.com/pyungjae9492/remote-preview-kit#readme",
+  "bugs": {
+    "url": "https://github.com/pyungjae9492/remote-preview-kit/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pyungjae9492/remote-preview-kit.git"
+  },
+  "files": [
+    "bin",
+    "skills",
+    "LICENSE",
+    "README.md"
+  ],
   "bin": {
-    "remote-preview": "./bin/remote-preview.mjs"
+    "remote-preview": "bin/remote-preview.mjs"
   },
   "scripts": {
     "test": "node --test"
