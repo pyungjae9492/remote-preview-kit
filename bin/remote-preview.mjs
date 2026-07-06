@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 
+// allow: SIZE_OK - single-file zero-dependency CLI; split when adding another command.
+
 import { spawn } from 'node:child_process';
 import { access, readFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import http from 'node:http';
 import { basename, join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 
 const EXIT = {
   USAGE: 64,
@@ -16,6 +19,7 @@ const EXIT = {
   PROVIDER_TIMEOUT: 70,
   NO_URL: 71,
   START_FAILED: 72,
+  SETUP_FAILED: 73,
 };
 
 const RISKY_PORTS = new Set([
@@ -24,6 +28,7 @@ const RISKY_PORTS = new Set([
 ]);
 
 const PROVIDERS = new Set(['auto', 'codespaces', 'cloudflared', 'ngrok']);
+const INSTALLABLE_PROVIDERS = new Set(['cloudflared', 'ngrok']);
 const COMMON_PORTS = Object.freeze([
   5173, 3000, 3001, 3002, 3003, 3004, 4173, 4321, 5000, 5174, 8000, 8080, 8787,
 ]);
@@ -35,6 +40,7 @@ function help() {
 Expose a localhost dev server through an existing preview provider.
 
 Usage:
+  remote-preview setup [--provider <cloudflared|ngrok>] [--yes]
   remote-preview [--port <port>|--url <http://localhost:port>] [options]
 
 If --port and --url are omitted, common localhost dev ports are scanned and
@@ -43,6 +49,7 @@ If no server responds, package.json's dev script is started when present.
 
 Options:
   --provider <auto|codespaces|cloudflared|ngrok>  Provider to use
+  --yes                                         Confirm setup install prompts
   --public                                      Allow public tunnel providers
   --json                                        Print machine-readable JSON
   --notify-cmd <program>                       Run a notifier with the URL
@@ -66,6 +73,11 @@ function parseArgs(argv) {
     dryRun: false,
   };
 
+  if (argv[0] === 'setup') {
+    options.command = 'setup';
+    argv = argv.slice(1);
+  }
+
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const value = () => {
@@ -79,6 +91,7 @@ function parseArgs(argv) {
     else if (arg === '--port') options.port = parsePort(value());
     else if (arg === '--url') options.url = value();
     else if (arg === '--provider') options.provider = value();
+    else if (arg === '--yes') options.yes = true;
     else if (arg === '--public') options.public = true;
     else if (arg === '--json') options.json = true;
     else if (arg === '--notify-cmd') options.notifyCmd = value();
@@ -367,6 +380,15 @@ async function resolveCommand(provider) {
   return null;
 }
 
+async function resolveExecutable(command) {
+  const paths = (process.env.PATH ?? '').split(':').filter(Boolean);
+  for (const dir of paths) {
+    const exact = join(dir, command);
+    if (await canExecute(exact)) return exact;
+  }
+  return null;
+}
+
 async function canExecute(path) {
   try {
     await access(path, fsConstants.X_OK);
@@ -405,7 +427,7 @@ function extractUrl(provider, text) {
 
 async function runSpawnProvider(provider, options) {
   const resolved = await resolveCommand(provider);
-  if (!resolved) throw appError('PROVIDER_MISSING', `${provider} was not found on PATH`, EXIT.PROVIDER_MISSING, options);
+  if (!resolved) throw appError('PROVIDER_MISSING', `${provider} was not found on PATH; run remote-preview setup --provider ${provider}`, EXIT.PROVIDER_MISSING, options);
 
   const child = spawn(resolved.command, [...resolved.args, ...providerArgs(provider, options.port)], {
     cwd: process.cwd(),
@@ -472,7 +494,7 @@ async function runSpawnProvider(provider, options) {
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.on('error', (error) => {
-      if (error.code === 'ENOENT') finish(reject, appError('PROVIDER_MISSING', `${provider} was not found on PATH`, EXIT.PROVIDER_MISSING, options));
+      if (error.code === 'ENOENT') finish(reject, appError('PROVIDER_MISSING', `${provider} was not found on PATH; run remote-preview setup --provider ${provider}`, EXIT.PROVIDER_MISSING, options));
       else finish(reject, appError('PROVIDER_EARLY_EXIT', error.message, EXIT.PROVIDER_EARLY_EXIT, options));
     });
     child.on('close', (code) => {
@@ -551,12 +573,92 @@ async function notify(result, options) {
   });
 }
 
+async function runSetup(options) {
+  const provider = await setupProvider(options);
+  const installedPath = await resolveExecutable(provider);
+  const install = await providerInstall(provider);
+  if (installedPath) {
+    return { ok: true, provider, installed: true, path: installedPath, installCommand: install?.display ?? null };
+  }
+  if (!install) {
+    throw appError('SETUP_UNSUPPORTED', `automatic install for ${provider} is only supported on macOS with Homebrew`, EXIT.SETUP_FAILED, options);
+  }
+  if (options.dryRun) {
+    return { ok: true, provider, installed: false, installCommand: install.display, dryRun: true };
+  }
+  await confirmInstall(provider, install.display, options);
+  await runInstall(install, options);
+  return { ok: true, provider, installed: true, installCommand: install.display };
+}
+
+async function setupProvider(options) {
+  if (options.provider !== 'auto') {
+    if (!INSTALLABLE_PROVIDERS.has(options.provider)) throw usage('setup provider must be cloudflared or ngrok');
+    return options.provider;
+  }
+  if (!process.stdin.isTTY) throw usage('setup requires --provider in non-interactive shells');
+  process.stdout.write('Choose provider:\n1) cloudflared\n2) ngrok\n');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question('Provider [1]: ')).trim();
+    return answer === '2' || answer.toLowerCase() === 'ngrok' ? 'ngrok' : 'cloudflared';
+  } finally {
+    rl.close();
+  }
+}
+
+async function providerInstall(provider) {
+  if (process.platform !== 'darwin') return null;
+  const brew = await resolveExecutable('brew');
+  if (!brew) return null;
+  return { command: brew, args: ['install', provider], display: `brew install ${provider}` };
+}
+
+async function confirmInstall(provider, command, options) {
+  if (options.yes) return;
+  if (!process.stdin.isTTY) {
+    throw appError('SETUP_CONFIRM_REQUIRED', `pass --yes to install ${provider} with ${command}`, EXIT.SETUP_FAILED, options);
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question(`Install ${provider} with "${command}"? [y/N] `)).trim().toLowerCase();
+    if (answer !== 'y' && answer !== 'yes') throw appError('SETUP_CANCELLED', 'setup cancelled', EXIT.SETUP_FAILED, options);
+  } finally {
+    rl.close();
+  }
+}
+
+async function runInstall(install, options) {
+  await new Promise((resolve, reject) => {
+    const child = spawn(install.command, install.args, { stdio: 'inherit', shell: false });
+    child.on('error', (error) => reject(appError('SETUP_FAILED', error.message, EXIT.SETUP_FAILED, options)));
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(appError('SETUP_FAILED', `${install.display} exited ${code}`, EXIT.SETUP_FAILED, options));
+    });
+  });
+}
+
+function outputSetup(result, options) {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
+  if (result.installed && result.path) process.stdout.write(`${result.provider} already installed: ${result.path}\n`);
+  else if (result.dryRun) process.stdout.write(`${result.installCommand}\n`);
+  else process.stdout.write(`${result.provider} installed\n`);
+}
+
 async function main() {
   let options = {};
   try {
     options = parseArgs(process.argv.slice(2));
     if (options.help) {
       process.stdout.write(help());
+      return;
+    }
+    if (options.command === 'setup') {
+      outputSetup(await runSetup(options), options);
       return;
     }
     const result = await runProvider(options);

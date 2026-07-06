@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+
+// allow: SIZE_OK - CLI behavior matrix stays together until commands split.
+
 import http from 'node:http';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +43,19 @@ function fixtureEnv(extra = {}) {
   const env = { ...extra, PATH: fixturePathEnv(), REMOTE_PREVIEW_FIXTURE_RUN: '1' };
   delete env.NODE_TEST_CONTEXT;
   return env;
+}
+
+async function withFakeBrew(fn) {
+  const dir = await mkdtemp(join(tmpdir(), 'remote-preview-brew-'));
+  const record = join(dir, 'brew.json');
+  const brew = join(dir, 'brew');
+  await writeFile(brew, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(record)}, JSON.stringify(process.argv.slice(2)));\n`);
+  await chmod(brew, 0o755);
+  try {
+    return await fn({ dir, record, env: { PATH: `${dir}:${dirname(process.execPath)}:/usr/bin:/bin` } });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 async function withServer(port, fn) {
@@ -199,6 +215,29 @@ test('starts package dev script when no localhost dev server responds', async ()
     if (payload?.devServerPid) stopProcessGroup(payload.devServerPid);
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('setup dry-run prints provider install command as JSON', async () => {
+  const result = await withFakeBrew(({ env }) => run(['setup', '--provider', 'cloudflared', '--dry-run', '--json'], { env }));
+  assert.equal(result.code, 0);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ok: true,
+    provider: 'cloudflared',
+    installed: false,
+    installCommand: 'brew install cloudflared',
+    dryRun: true,
+  });
+});
+
+test('setup installs selected provider through brew when confirmed', async () => {
+  await withFakeBrew(async ({ env, record }) => {
+    const result = await run(['setup', '--provider', 'ngrok', '--yes', '--json'], { env });
+    assert.equal(result.code, 0);
+    assert.deepEqual(JSON.parse(await readFile(record, 'utf8')), ['install', 'ngrok']);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.provider, 'ngrok');
+    assert.equal(payload.installCommand, 'brew install ngrok');
+  });
 });
 
 test('cloudflared parses trycloudflare URL and stays alive', async () => {

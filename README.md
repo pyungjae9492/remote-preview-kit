@@ -10,6 +10,19 @@ URL to a user on mobile.
 
 ## Install
 
+Run the one-time provider setup from any app directory:
+
+```sh
+npx github:pyungjae9492/remote-preview-kit setup
+```
+
+It lets you choose `cloudflared` or `ngrok` and installs the selected provider
+with Homebrew on macOS. For non-interactive setup:
+
+```sh
+npx github:pyungjae9492/remote-preview-kit setup --provider cloudflared --yes
+```
+
 Install directly from GitHub:
 
 ```sh
@@ -87,6 +100,13 @@ It is intentionally small:
 
 ## Usage
 
+Set up a provider:
+
+```sh
+remote-preview setup
+remote-preview setup --provider ngrok --yes
+```
+
 Machine-readable output:
 
 ```sh
@@ -134,6 +154,7 @@ yourself.
 ### cloudflared
 
 ```sh
+remote-preview setup --provider cloudflared --yes
 remote-preview --provider cloudflared --public
 ```
 
@@ -142,6 +163,7 @@ remote-preview --provider cloudflared --public
 ### ngrok
 
 ```sh
+remote-preview setup --provider ngrok --yes
 remote-preview --provider ngrok --public
 ```
 

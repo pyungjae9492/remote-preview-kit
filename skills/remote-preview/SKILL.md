@@ -10,21 +10,23 @@ remote coding environment.
 
 ## Workflow
 
-1. Run from the app directory. The CLI auto-detects common HTTP dev-server
+1. If the provider is missing, run `remote-preview setup` or
+   `remote-preview setup --provider cloudflared --yes`.
+2. Run from the app directory. The CLI auto-detects common HTTP dev-server
    ports when `--port` and `--url` are omitted. If no server responds and
    `package.json` has `scripts.dev`, it starts `npm run dev`.
-2. Prefer private platform forwarding when available:
+3. Prefer private platform forwarding when available:
    ```sh
    remote-preview --provider codespaces --json
    ```
-3. For public review URLs, require explicit public intent:
+4. For public review URLs, require explicit public intent:
    ```sh
    remote-preview --provider cloudflared --public --json
    ```
-4. If multiple dev servers are running, pass the intended `--port` or `--url`.
+5. If multiple dev servers are running, pass the intended `--port` or `--url`.
    If the project has no npm `dev` script, pass `--start-cmd`.
-5. Return only the preview URL to the user unless they need diagnostics.
-6. Record the cleanup command or PID in your task notes.
+6. Return only the preview URL to the user unless they need diagnostics.
+7. Record the cleanup command or PID in your task notes.
 
 ## Safety Rules
 
