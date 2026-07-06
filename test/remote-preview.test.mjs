@@ -145,7 +145,7 @@ test('unknown option exits 64', async () => {
 });
 
 test('codespaces dry-run emits success JSON', async () => {
-  const result = await run(['--port', '3000', '--provider', 'codespaces', '--json', '--dry-run'], {
+  const result = await run(['--port', '3000', '--provider', 'codespaces', '--private', '--json', '--dry-run'], {
     env: {
       CODESPACE_NAME: 'bright-space',
       GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN: 'preview.app.github.dev',
@@ -191,17 +191,31 @@ test('accepts localhost URL and derives port', async () => {
   assert.equal(JSON.parse(result.stdout).port, 4173);
 });
 
-test('public providers require --public', async () => {
-  const result = await run(['--port', '3000', '--provider', 'cloudflared', '--json']);
-  assert.equal(result.code, 66);
-  assert.equal(JSON.parse(result.stdout).error.code, 'PUBLIC_REQUIRED');
+test('remote-preview defaults to public cloudflared with one-use auth', async () => {
+  let payload;
+  await withHttpServer(0, async (port) => {
+    try {
+      const result = await run(['--json'], {
+        env: fixtureEnv({ REMOTE_PREVIEW_PORTS: String(port) }),
+      });
+      assert.equal(result.code, 0);
+      payload = JSON.parse(result.stdout);
+      assert.equal(payload.provider, 'cloudflared');
+      assert.equal(payload.auth, true);
+      assert.equal(payload.authUses, 1);
+      assert.match(payload.url, /^https:\/\/.+\.trycloudflare\.com\/\?remote_preview_token=/);
+    } finally {
+      if (payload?.authProxyPid) stopProcessGroup(payload.authProxyPid);
+      if (payload?.pid) stopProcessGroup(payload.pid);
+    }
+  });
 });
 
 test('auto-detects a responsive localhost dev server when port is omitted', async () => {
   let detectedPort;
   const result = await withHttpServer(0, (port) => {
     detectedPort = port;
-    return run(['--provider', 'cloudflared', '--public', '--json'], {
+    return run(['--provider', 'cloudflared', '--no-auth', '--public', '--json'], {
       env: fixtureEnv({ REMOTE_PREVIEW_PORTS: String(port) }),
     });
   });
@@ -230,7 +244,7 @@ test('auto-detect skips macOS AirTunes on port 5000', async () => {
     let detectedPort;
     const result = await withHttpServer(0, (port) => {
       detectedPort = port;
-      return run(['--provider', 'cloudflared', '--public', '--json'], {
+      return run(['--provider', 'cloudflared', '--no-auth', '--public', '--json'], {
         env: fixtureEnv({ REMOTE_PREVIEW_PORTS: `${airTunesPort},${port}` }),
       });
     });
@@ -242,7 +256,7 @@ test('auto-detect skips macOS AirTunes on port 5000', async () => {
 });
 
 test('auto-detect reports tried ports when no localhost dev server responds', async () => {
-  const result = await run(['--provider', 'cloudflared', '--public', '--json'], {
+  const result = await run(['--provider', 'cloudflared', '--no-auth', '--public', '--json'], {
     env: fixtureEnv({ REMOTE_PREVIEW_PORTS: '6553' }),
   });
   assert.equal(result.code, 64);
@@ -259,7 +273,7 @@ test('starts package dev script when no localhost dev server responds', async ()
   let payload;
   try {
     await writeFile(join(dir, 'package.json'), JSON.stringify({ scripts: { dev: command } }));
-    const result = await run(['--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '5000'], {
+    const result = await run(['--provider', 'cloudflared', '--no-auth', '--public', '--json', '--timeout-ms', '5000'], {
       cwd: dir,
       env: fixtureEnv({ REMOTE_PREVIEW_PORTS: String(port) }),
     });
@@ -300,7 +314,7 @@ process.on('SIGTERM', () => child.kill('SIGTERM'));
 child.on('exit', (code, signal) => process.exit(signal ? 1 : code ?? 0));
 `);
     await chmod(pnpm, 0o755);
-    const result = await run(['--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '5000'], {
+    const result = await run(['--provider', 'cloudflared', '--no-auth', '--public', '--json', '--timeout-ms', '5000'], {
       cwd: dir,
       env: {
         ...fixtureEnv(),
@@ -326,7 +340,7 @@ test('waits longer for package dev script startup than provider URL timeout', as
   let payload;
   try {
     await writeFile(join(dir, 'package.json'), JSON.stringify({ scripts: { dev: command } }));
-    const result = await run(['--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '500'], {
+    const result = await run(['--provider', 'cloudflared', '--no-auth', '--public', '--json', '--timeout-ms', '500'], {
       cwd: dir,
       env: fixtureEnv({
         LOCAL_SERVER_DELAY_MS: '1200',
@@ -373,6 +387,66 @@ test('auth token proxy blocks requests until token sets cookie', async () => {
       const allowed = await requestLocal(payload.port, '/', { cookie });
       assert.equal(allowed.statusCode, 200);
       assert.equal(allowed.body, 'ok /');
+    } finally {
+      if (payload?.authProxyPid) stopProcessGroup(payload.authProxyPid);
+    }
+  });
+});
+
+test('auth token proxy allows only one token redemption by default', async () => {
+  let payload;
+  await withHttpServer(0, async (port) => {
+    try {
+      const result = await run([
+        '--port',
+        String(port),
+        '--provider',
+        'cloudflared',
+        '--public',
+        '--json',
+        '--auth-token',
+        'secret-token',
+      ], { env: fixtureEnv() });
+      assert.equal(result.code, 0);
+      payload = JSON.parse(result.stdout);
+
+      const first = await requestLocal(payload.port, '/?remote_preview_token=secret-token');
+      assert.equal(first.statusCode, 200);
+      const cookie = first.headers['set-cookie'][0].split(';')[0];
+
+      const sameBrowser = await requestLocal(payload.port, '/', { cookie });
+      assert.equal(sameBrowser.statusCode, 200);
+
+      const secondBrowser = await requestLocal(payload.port, '/?remote_preview_token=secret-token');
+      assert.equal(secondBrowser.statusCode, 401);
+    } finally {
+      if (payload?.authProxyPid) stopProcessGroup(payload.authProxyPid);
+    }
+  });
+});
+
+test('auth token proxy accepts configured token redemption count', async () => {
+  let payload;
+  await withHttpServer(0, async (port) => {
+    try {
+      const result = await run([
+        '--port',
+        String(port),
+        '--provider',
+        'cloudflared',
+        '--public',
+        '--json',
+        '--auth-token',
+        'secret-token',
+        '--auth-uses',
+        '2',
+      ], { env: fixtureEnv() });
+      assert.equal(result.code, 0);
+      payload = JSON.parse(result.stdout);
+
+      assert.equal((await requestLocal(payload.port, '/?remote_preview_token=secret-token')).statusCode, 200);
+      assert.equal((await requestLocal(payload.port, '/?remote_preview_token=secret-token')).statusCode, 200);
+      assert.equal((await requestLocal(payload.port, '/?remote_preview_token=secret-token')).statusCode, 401);
     } finally {
       if (payload?.authProxyPid) stopProcessGroup(payload.authProxyPid);
     }
@@ -458,13 +532,13 @@ test('auth token proxy does not forward preview credentials upstream', async () 
   }
 });
 
-test('REMOTE_PREVIEW_TOKEN is used only when auth is requested', async () => {
+test('REMOTE_PREVIEW_TOKEN protects previews by default and --no-auth disables it', async () => {
   let plain;
   let protectedPreview;
   await withHttpServer(0, async (port) => {
     try {
       const env = fixtureEnv({ REMOTE_PREVIEW_TOKEN: 'env-token' });
-      const plainResult = await run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json'], { env });
+      const plainResult = await run(['--port', String(port), '--provider', 'cloudflared', '--public', '--no-auth', '--json'], { env });
       assert.equal(plainResult.code, 0);
       plain = JSON.parse(plainResult.stdout);
       assert.equal(plain.auth, undefined);
@@ -472,7 +546,7 @@ test('REMOTE_PREVIEW_TOKEN is used only when auth is requested', async () => {
       assert.equal(plain.port, port);
       assert.doesNotMatch(plain.url, /remote_preview_token/);
 
-      const protectedResult = await run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json', '--auth'], { env });
+      const protectedResult = await run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json'], { env });
       assert.equal(protectedResult.code, 0);
       protectedPreview = JSON.parse(protectedResult.stdout);
       assert.equal(protectedPreview.auth, true);
@@ -509,7 +583,7 @@ test('setup installs selected provider through brew when confirmed', async () =>
 });
 
 test('cloudflared parses trycloudflare URL and stays alive', async () => {
-  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '5000'], {
+  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--no-auth', '--public', '--json', '--timeout-ms', '5000'], {
     env: fixtureEnv(env),
   }));
   assert.equal(result.code, 0);
@@ -533,7 +607,7 @@ process.on('SIGTERM', () => process.exit(0));
 `);
   await chmod(provider, 0o755);
   try {
-    const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '5000'], {
+    const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--no-auth', '--public', '--json', '--timeout-ms', '5000'], {
       env: { ...env, PATH: `${dir}:${process.env.PATH ?? ''}` },
     }));
     assert.equal(result.code, 0);
@@ -547,7 +621,7 @@ process.on('SIGTERM', () => process.exit(0));
 });
 
 test('ngrok prefers Forwarding HTTPS URL', async () => {
-  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'ngrok', '--public', '--json', '--timeout-ms', '5000'], {
+  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'ngrok', '--no-auth', '--public', '--json', '--timeout-ms', '5000'], {
     env: fixtureEnv(env),
   }));
   assert.equal(result.code, 0);
@@ -555,7 +629,7 @@ test('ngrok prefers Forwarding HTTPS URL', async () => {
 });
 
 test('missing provider binary exits 67', async () => {
-  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '500'], {
+  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--no-auth', '--public', '--json', '--timeout-ms', '500'], {
     env: { PATH: '/usr/bin:/bin', ...env },
   }));
   assert.equal(result.code, 67);
@@ -563,7 +637,7 @@ test('missing provider binary exits 67', async () => {
 });
 
 test('fake provider fixture is ignored outside fixture mode', async () => {
-  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '500'], {
+  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--no-auth', '--public', '--json', '--timeout-ms', '500'], {
     env: { ...env, PATH: `${fixtures}:${dirname(process.execPath)}:/usr/bin:/bin` },
   }));
   assert.equal(result.code, 67);
@@ -571,14 +645,14 @@ test('fake provider fixture is ignored outside fixture mode', async () => {
 });
 
 test('early provider exit exits 68', async () => {
-  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'ngrok', '--public', '--json'], {
+  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'ngrok', '--no-auth', '--public', '--json'], {
     env: fixtureEnv({ FAKE_NGROK_MODE: 'early', ...env }),
   }));
   assert.equal(result.code, 68);
 });
 
 test('provider URL timeout exits 70 and kills child', async () => {
-  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '300'], {
+  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--no-auth', '--public', '--json', '--timeout-ms', '300'], {
     env: fixtureEnv({ FAKE_CLOUDFLARED_MODE: 'silent', ...env }),
   }));
   assert.equal(result.code, 70);
@@ -586,7 +660,7 @@ test('provider URL timeout exits 70 and kills child', async () => {
 });
 
 test('provider no-url output exits 71', async () => {
-  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json'], {
+  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--no-auth', '--public', '--json'], {
     env: fixtureEnv({ FAKE_CLOUDFLARED_MODE: 'no-url', ...env }),
   }));
   assert.equal(result.code, 71);
@@ -594,7 +668,7 @@ test('provider no-url output exits 71', async () => {
 });
 
 test('public provider refuses when localhost is not running', async () => {
-  const result = await run(['--port', '6553', '--provider', 'cloudflared', '--public', '--json'], {
+  const result = await run(['--port', '6553', '--provider', 'cloudflared', '--no-auth', '--public', '--json'], {
     env: fixtureEnv(),
   });
   assert.equal(result.code, 64);
@@ -602,7 +676,7 @@ test('public provider refuses when localhost is not running', async () => {
 });
 
 test('codespaces derives fallback app.github.dev URL and mentions public command', async () => {
-  const result = await run(['--provider', 'codespaces', '--port', '3000', '--public'], {
+  const result = await run(['--provider', 'codespaces', '--port', '3000', '--no-auth', '--public'], {
     env: { CODESPACE_NAME: 'silver-spoon', GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN: '' },
   });
   assert.equal(result.code, 0);
@@ -611,7 +685,7 @@ test('codespaces derives fallback app.github.dev URL and mentions public command
 });
 
 test('normal mode prints URL as first non-empty stdout line', async () => {
-  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--public', '--timeout-ms', '5000'], {
+  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--no-auth', '--public', '--timeout-ms', '5000'], {
     env: fixtureEnv(env),
   }));
   assert.equal(result.code, 0);
@@ -620,7 +694,7 @@ test('normal mode prints URL as first non-empty stdout line', async () => {
 });
 
 test('json mode prints only JSON', async () => {
-  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json'], {
+  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--no-auth', '--public', '--json'], {
     env: fixtureEnv(env),
   }));
   assert.equal(result.code, 0);
@@ -636,6 +710,7 @@ test('notify command receives URL in env and final argv', async () => {
     String(port),
     '--provider',
     'cloudflared',
+    '--no-auth',
     '--public',
     '--json',
     '--notify-cmd',

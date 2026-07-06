@@ -49,19 +49,19 @@ remote-preview --help
 From your app directory:
 
 ```sh
-remote-preview --provider cloudflared --public --auth
+remote-preview
 ```
 
 The first non-empty line is the URL:
 
 ```txt
-https://example.trycloudflare.com
+https://example.trycloudflare.com/?remote_preview_token=...
 ```
 
 If you do not install the binary, run the same command through Node:
 
 ```sh
-node bin/remote-preview.mjs --provider cloudflared --public --auth
+node bin/remote-preview.mjs
 ```
 
 When `--port` and `--url` are omitted, the CLI scans common HTTP dev-server
@@ -75,13 +75,13 @@ explicitly.
 To customize the scan order:
 
 ```sh
-REMOTE_PREVIEW_PORTS=3000,5173 remote-preview --provider cloudflared --public
+REMOTE_PREVIEW_PORTS=3000,5173 remote-preview
 ```
 
 For projects without a package `dev` script, pass the command to start:
 
 ```sh
-remote-preview --start-cmd "python3 -m http.server 8000" --provider cloudflared --public
+remote-preview --start-cmd "python3 -m http.server 8000"
 ```
 
 ## Overview
@@ -96,8 +96,8 @@ It is intentionally small:
 - Node.js standard library only.
 - No hosted service.
 - No provider SDKs.
-- Public tunnels require explicit `--public`.
-- Optional token proxy with `--auth` or `--auth-token`.
+- Public tunnels are allowed by default for one-command previews.
+- Token proxy is on by default with one token redemption.
 - Common database and admin ports are blocked by default.
 - Codespaces support is read-only and never changes port visibility.
 
@@ -113,33 +113,39 @@ remote-preview setup --provider ngrok --yes
 Machine-readable output:
 
 ```sh
-remote-preview --provider cloudflared --public --auth --json
+remote-preview --json
 ```
 
 Use a localhost URL instead of a port:
 
 ```sh
-remote-preview --url http://127.0.0.1:5173 --provider cloudflared --public
+remote-preview --url http://127.0.0.1:5173
 ```
 
-Protect the public preview with a token:
+Token protection is enabled by default. The default token can be redeemed by
+one browser session; that session keeps working via an HttpOnly cookie. To
+allow more reviewers:
 
 ```sh
-remote-preview --provider cloudflared --public --auth
+remote-preview --auth-uses 3
 remote-preview --provider cloudflared --public --auth-token "$REMOTE_PREVIEW_TOKEN"
 ```
 
-`--auth` generates a token and appends it to the returned URL. Token requests
-also set an HttpOnly cookie, so the same browser can later use the clean URL.
-Requests without the token or cookie receive `401`. This is link-token access
-control, not identity auth; anyone who gets the token URL can use it until you
+Requests without a valid token or session cookie receive `401`. This is
+link-token access control, not identity auth; anyone who redeems the token URL
+before the usage limit is exhausted can use that browser session until you
 restart the preview with a new token.
+
+Disable token protection only for trusted networks:
+
+```sh
+remote-preview --no-auth
+```
 
 Notify another process:
 
 ```sh
-remote-preview --provider cloudflared --public \
-  --notify-cmd node --notify-arg ./scripts/send-preview.mjs
+remote-preview --notify-cmd node --notify-arg ./scripts/send-preview.mjs
 ```
 
 The notifier receives the preview URL in `REMOTE_PREVIEW_URL` and as the final
@@ -148,7 +154,7 @@ argv item. The command runs without shell interpolation.
 Start a custom dev server when nothing is already running:
 
 ```sh
-remote-preview --start-cmd "npm run preview" --provider cloudflared --public
+remote-preview --start-cmd "npm run preview"
 ```
 
 If the CLI starts the dev server, the JSON output includes `devServerPid` and
@@ -171,33 +177,37 @@ yourself.
 
 ```sh
 remote-preview setup --provider cloudflared --yes
-remote-preview --provider cloudflared --public
+remote-preview --provider cloudflared
 ```
 
-`cloudflared` creates a public Quick Tunnel, so `--public` is required.
+`cloudflared` creates a public Quick Tunnel. The CLI protects it with token
+auth by default.
 
 ### ngrok
 
 ```sh
 remote-preview setup --provider ngrok --yes
-remote-preview --provider ngrok --public
+remote-preview --provider ngrok
 ```
 
-`ngrok` creates a public endpoint, so `--public` is required.
+`ngrok` creates a public endpoint. The CLI protects it with token auth by
+default.
 
 ## Safety
 
-Public providers require `--public`. Common database and admin ports are denied
-by default, including Postgres, MySQL, Redis, MongoDB, Elasticsearch, and local
-Supabase ports. Use `--allow-risky-port` only when you intentionally want to
-share one of those ports.
+Public providers are allowed by default so `remote-preview` can work as a
+one-command mobile preview. Use `--private` to refuse public tunnel fallback.
+Common database and admin ports are denied by default, including Postgres,
+MySQL, Redis, MongoDB, Elasticsearch, and local Supabase ports. Use
+`--allow-risky-port` only when you intentionally want to share one of those
+ports.
 
-`--allow-risky-port` does not bypass `--public`.
+`--allow-risky-port` does not disable token protection.
 
 Only local upstream URLs are accepted:
 
 ```sh
-remote-preview --url http://127.0.0.1:5173 --provider cloudflared --public
+remote-preview --url http://127.0.0.1:5173
 ```
 
 Remote upstream URLs are rejected.
@@ -209,8 +219,8 @@ For Codex mobile, Claude mobile, or Telegram Hermes-style agents:
 1. Run `remote-preview` from the app directory.
 2. Pass `--port` when multiple servers are running, or `--start-cmd` when the
    project does not have an npm `dev` script.
-3. Prefer `--auth` for public tunnels and return the tokenized `url` field or
-   the first stdout line only to the intended reviewer.
+3. Return the tokenized `url` field or the first stdout line only to the
+   intended reviewer. Pass `--auth-uses <count>` for multiple reviewers.
 4. Keep the cleanup command/PID in the task notes.
 
 Most dev-server live reload and WebSocket-based HMR continue to work because the
