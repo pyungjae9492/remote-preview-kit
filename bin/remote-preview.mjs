@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import http from 'node:http';
 import { basename, join } from 'node:path';
@@ -15,6 +15,7 @@ const EXIT = {
   NOTIFY_FAILED: 69,
   PROVIDER_TIMEOUT: 70,
   NO_URL: 71,
+  START_FAILED: 72,
 };
 
 const RISKY_PORTS = new Set([
@@ -38,6 +39,7 @@ Usage:
 
 If --port and --url are omitted, common localhost dev ports are scanned and
 the first HTTP-responsive server is exposed.
+If no server responds, package.json's dev script is started when present.
 
 Options:
   --provider <auto|codespaces|cloudflared|ngrok>  Provider to use
@@ -45,6 +47,7 @@ Options:
   --json                                        Print machine-readable JSON
   --notify-cmd <program>                       Run a notifier with the URL
   --notify-arg <arg>                           Argument for --notify-cmd
+  --start-cmd <command>                        Start this command if no server responds
   --timeout-ms <ms>                            Provider URL timeout
   --allow-risky-port                           Allow common DB/admin ports
   --dry-run                                    Avoid provider side effects
@@ -80,6 +83,7 @@ function parseArgs(argv) {
     else if (arg === '--json') options.json = true;
     else if (arg === '--notify-cmd') options.notifyCmd = value();
     else if (arg === '--notify-arg') options.notifyArgs.push(value());
+    else if (arg === '--start-cmd') options.startCmd = value();
     else if (arg === '--timeout-ms') options.timeoutMs = parseTimeout(value());
     else if (arg === '--allow-risky-port') options.allowRiskyPort = true;
     else if (arg === '--dry-run') options.dryRun = true;
@@ -227,12 +231,96 @@ async function resolveLocalPort(options) {
       return;
     }
   }
+
+  const startedPort = await startDevServerAndWait(options, ports);
+  if (startedPort) {
+    options.port = startedPort;
+    return;
+  }
+
   throw appError(
     'UPSTREAM_UNAVAILABLE',
-    `no localhost dev server found; tried ${ports.join(', ')}; pass --port or --url`,
+    `no localhost dev server found; tried ${ports.join(', ')}; pass --port, --url, or --start-cmd`,
     EXIT.USAGE,
     options,
   );
+}
+
+async function startDevServerAndWait(options, ports) {
+  const startCmd = await devServerStartCmd(options);
+  if (!startCmd) return null;
+  options.startedServer = startDevServer(startCmd);
+  const detectedPort = await waitForLocalPort(ports, options);
+  if (detectedPort) return detectedPort;
+  cleanupStartedServer(options.startedServer);
+  throw appError(
+    'START_FAILED',
+    `start command did not open a localhost dev server; tried ${ports.join(', ')}`,
+    EXIT.START_FAILED,
+    options,
+  );
+}
+
+async function devServerStartCmd(options) {
+  if (options.startCmd) return options.startCmd;
+  try {
+    const manifest = JSON.parse(await readFile(join(process.cwd(), 'package.json'), 'utf8'));
+    if (manifest?.scripts?.dev) return 'npm run dev';
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function startDevServer(command) {
+  const child = spawn(command, {
+    cwd: process.cwd(),
+    env: process.env,
+    shell: true,
+    detached: true,
+    stdio: 'ignore',
+  });
+  const started = { command, pid: child.pid ?? null, exited: false };
+  child.once('exit', (code, signal) => {
+    started.exited = true;
+    started.exit = signal ?? code;
+  });
+  child.unref();
+  return started;
+}
+
+async function waitForLocalPort(ports, options) {
+  const deadline = Date.now() + options.timeoutMs;
+  const timeoutMs = Math.min(options.timeoutMs, AUTO_DETECT_TIMEOUT_MS);
+  while (Date.now() < deadline) {
+    if (options.startedServer?.exited) return null;
+    for (const port of ports) {
+      if (await probeLocalhost(port, timeoutMs)) return port;
+    }
+  }
+  return null;
+}
+
+function cleanupStartedServer(startedServer) {
+  if (!startedServer?.pid) return;
+  try {
+    process.kill(-startedServer.pid, 'SIGTERM');
+  } catch {
+    try {
+      process.kill(startedServer.pid, 'SIGTERM');
+    } catch {}
+  }
+}
+
+function attachStartedServer(result, options) {
+  const started = options.startedServer;
+  if (!started?.pid) return result;
+  const startCleanup = `kill -TERM -${started.pid}`;
+  return {
+    ...result,
+    devServerPid: started.pid,
+    cleanup: result.cleanup ? `${startCleanup}; ${result.cleanup}` : startCleanup,
+  };
 }
 
 async function assertLocalReady(options) {
@@ -240,6 +328,7 @@ async function assertLocalReady(options) {
   if (options.provider === 'codespaces') return;
   if (process.env.REMOTE_PREVIEW_SKIP_READINESS === '1') return;
   if (await probeLocalhost(options.port, Math.min(options.timeoutMs, 2000))) return;
+  if (await startDevServerAndWait(options, [options.port])) return;
   throw appError('UPSTREAM_UNAVAILABLE', `localhost:${options.port} did not respond`, EXIT.USAGE, options);
 }
 
@@ -412,33 +501,38 @@ async function runSpawnProvider(provider, options) {
 
 async function runProvider(options) {
   await resolveLocalPort(options);
-  guard(options);
-  await assertLocalReady(options);
-  if (options.provider === 'codespaces') return await runCodespaces(options);
-  if (options.provider === 'auto') {
-    const url = codespacesUrl(options.port);
-    if (url) {
-      return {
-        ok: true,
-        provider: 'codespaces',
-        url,
-        port: options.port,
-        public: false,
-        pid: null,
-        cleanup: null,
-      };
+  try {
+    guard(options);
+    await assertLocalReady(options);
+    if (options.provider === 'codespaces') return attachStartedServer(await runCodespaces(options), options);
+    if (options.provider === 'auto') {
+      const url = codespacesUrl(options.port);
+      if (url) {
+        return attachStartedServer({
+          ok: true,
+          provider: 'codespaces',
+          url,
+          port: options.port,
+          public: false,
+          pid: null,
+          cleanup: null,
+        }, options);
+      }
+      if (!options.public) {
+        throw appError('PUBLIC_REQUIRED', 'no private forwarded URL detected; pass --public to use cloudflared or ngrok', EXIT.PUBLIC_REQUIRED, options);
+      }
+      try {
+        return attachStartedServer(await runSpawnProvider('cloudflared', { ...options, provider: 'cloudflared' }), options);
+      } catch (error) {
+        if (error.remotePreview?.error?.code !== 'PROVIDER_MISSING') throw error;
+        return attachStartedServer(await runSpawnProvider('ngrok', { ...options, provider: 'ngrok' }), options);
+      }
     }
-    if (!options.public) {
-      throw appError('PUBLIC_REQUIRED', 'no private forwarded URL detected; pass --public to use cloudflared or ngrok', EXIT.PUBLIC_REQUIRED, options);
-    }
-    try {
-      return await runSpawnProvider('cloudflared', { ...options, provider: 'cloudflared' });
-    } catch (error) {
-      if (error.remotePreview?.error?.code !== 'PROVIDER_MISSING') throw error;
-      return await runSpawnProvider('ngrok', { ...options, provider: 'ngrok' });
-    }
+    return attachStartedServer(await runSpawnProvider(options.provider, options), options);
+  } catch (error) {
+    cleanupStartedServer(options.startedServer);
+    throw error;
   }
-  return await runSpawnProvider(options.provider, options);
 }
 
 async function notify(result, options) {

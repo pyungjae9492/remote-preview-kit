@@ -33,13 +33,7 @@ remote-preview --help
 
 ## Quick start
 
-Start your app first:
-
-```sh
-npm run dev
-```
-
-Then expose the dev server:
+From your app directory:
 
 ```sh
 remote-preview --provider cloudflared --public
@@ -58,14 +52,21 @@ node bin/remote-preview.mjs --provider cloudflared --public
 ```
 
 When `--port` and `--url` are omitted, the CLI scans common HTTP dev-server
-ports such as `5173`, `3000`, `3001`, `4173`, `4321`, `8000`, and `8080`, then
-exposes the first responsive localhost server. If more than one dev server is
-running, pass `--port` or `--url` explicitly.
+ports such as `5173`, `3000`, `3001`, `4173`, `4321`, `8000`, and `8080`. If no
+server responds and the current project has `scripts.dev`, it starts
+`npm run dev`, waits for a port to respond, then exposes it. If more than one
+dev server is running, pass `--port` or `--url` explicitly.
 
 To customize the scan order:
 
 ```sh
 REMOTE_PREVIEW_PORTS=3000,5173 remote-preview --provider cloudflared --public
+```
+
+For projects without an npm `dev` script, pass the command to start:
+
+```sh
+remote-preview --start-cmd "python3 -m http.server 8000" --provider cloudflared --public
 ```
 
 ## Overview
@@ -107,6 +108,15 @@ remote-preview --provider cloudflared --public \
 
 The notifier receives the preview URL in `REMOTE_PREVIEW_URL` and as the final
 argv item. The command runs without shell interpolation.
+
+Start a custom dev server when nothing is already running:
+
+```sh
+remote-preview --start-cmd "npm run preview" --provider cloudflared --public
+```
+
+If the CLI starts the dev server, the JSON output includes `devServerPid` and
+the cleanup command includes that process group.
 
 ## Providers
 
@@ -158,9 +168,9 @@ Remote upstream URLs are rejected.
 
 For Codex mobile, Claude mobile, or Telegram Hermes-style agents:
 
-1. Confirm the dev server is already running.
-2. Run `remote-preview` without a port for common dev servers, or pass `--port`
-   when multiple servers are running.
+1. Run `remote-preview` from the app directory.
+2. Pass `--port` when multiple servers are running, or `--start-cmd` when the
+   project does not have an npm `dev` script.
 3. Return the `url` field or the first stdout line to the user.
 4. Keep the cleanup command/PID in the task notes.
 

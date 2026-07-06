@@ -10,8 +10,9 @@ remote coding environment.
 
 ## Workflow
 
-1. Confirm the app's dev server is already running. The CLI auto-detects common
-   HTTP dev-server ports when `--port` and `--url` are omitted.
+1. Run from the app directory. The CLI auto-detects common HTTP dev-server
+   ports when `--port` and `--url` are omitted. If no server responds and
+   `package.json` has `scripts.dev`, it starts `npm run dev`.
 2. Prefer private platform forwarding when available:
    ```sh
    remote-preview --provider codespaces --json
@@ -21,6 +22,7 @@ remote coding environment.
    remote-preview --provider cloudflared --public --json
    ```
 4. If multiple dev servers are running, pass the intended `--port` or `--url`.
+   If the project has no npm `dev` script, pass `--start-cmd`.
 5. Return only the preview URL to the user unless they need diagnostics.
 6. Record the cleanup command or PID in your task notes.
 
@@ -52,3 +54,9 @@ remote-preview --provider cloudflared --public \
 ```
 
 The command runs without shell interpolation.
+
+For custom dev-server commands:
+
+```sh
+remote-preview --start-cmd "npm run preview" --provider cloudflared --public --json
+```

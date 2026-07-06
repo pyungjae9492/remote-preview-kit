@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +14,7 @@ const fixtures = join(root, 'test', 'fixtures');
 function run(args, options = {}) {
   return new Promise((resolveRun) => {
     const child = spawn(process.execPath, [bin, ...args], {
-      cwd: root,
+      cwd: options.cwd ?? root,
       env: { ...process.env, ...(options.env ?? {}) },
       shell: false,
     });
@@ -62,6 +62,28 @@ async function withHttpServer(port, fn) {
     await new Promise((resolveClose) => {
       server.close(resolveClose);
     });
+  }
+}
+
+async function unusedPort() {
+  const server = http.createServer();
+  await new Promise((resolveListen) => {
+    server.listen(0, '127.0.0.1', resolveListen);
+  });
+  const { port } = server.address();
+  await new Promise((resolveClose) => {
+    server.close(resolveClose);
+  });
+  return port;
+}
+
+function stopProcessGroup(pid) {
+  try {
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {}
   }
 }
 
@@ -154,6 +176,29 @@ test('auto-detect reports tried ports when no localhost dev server responds', as
   assert.equal(payload.error.code, 'UPSTREAM_UNAVAILABLE');
   assert.equal(payload.port, null);
   assert.match(payload.error.message, /tried 6553/);
+});
+
+test('starts package dev script when no localhost dev server responds', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'remote-preview-start-'));
+  const port = await unusedPort();
+  const command = `"${process.execPath}" "${join(fixtures, 'local-server.mjs')}" ${port}`;
+  let payload;
+  try {
+    await writeFile(join(dir, 'package.json'), JSON.stringify({ scripts: { dev: command } }));
+    const result = await run(['--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '5000'], {
+      cwd: dir,
+      env: fixtureEnv({ REMOTE_PREVIEW_PORTS: String(port) }),
+    });
+    assert.equal(result.code, 0);
+    payload = JSON.parse(result.stdout);
+    assert.equal(payload.provider, 'cloudflared');
+    assert.equal(payload.port, port);
+    assert.equal(payload.devServerPid > 0, true);
+    assert.match(payload.cleanup, new RegExp(`kill -TERM -${payload.devServerPid}`));
+  } finally {
+    if (payload?.devServerPid) stopProcessGroup(payload.devServerPid);
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('cloudflared parses trycloudflare URL and stays alive', async () => {
