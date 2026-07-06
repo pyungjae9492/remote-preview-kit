@@ -268,6 +268,33 @@ test('auth token proxy blocks requests until token sets cookie', async () => {
   });
 });
 
+test('REMOTE_PREVIEW_TOKEN is used only when auth is requested', async () => {
+  let plain;
+  let protectedPreview;
+  await withHttpServer(0, async (port) => {
+    try {
+      const env = fixtureEnv({ REMOTE_PREVIEW_TOKEN: 'env-token' });
+      const plainResult = await run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json'], { env });
+      assert.equal(plainResult.code, 0);
+      plain = JSON.parse(plainResult.stdout);
+      assert.equal(plain.auth, undefined);
+      assert.equal(plain.authProxyPid, undefined);
+      assert.equal(plain.port, port);
+      assert.doesNotMatch(plain.url, /remote_preview_token/);
+
+      const protectedResult = await run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json', '--auth'], { env });
+      assert.equal(protectedResult.code, 0);
+      protectedPreview = JSON.parse(protectedResult.stdout);
+      assert.equal(protectedPreview.auth, true);
+      assert.match(protectedPreview.url, /remote_preview_token=env-token/);
+    } finally {
+      if (plain?.pid) stopProcessGroup(plain.pid);
+      if (protectedPreview?.pid) stopProcessGroup(protectedPreview.pid);
+      if (protectedPreview?.authProxyPid) stopProcessGroup(protectedPreview.authProxyPid);
+    }
+  });
+});
+
 test('setup dry-run prints provider install command as JSON', async () => {
   const result = await withFakeBrew(({ env }) => run(['setup', '--provider', 'cloudflared', '--dry-run', '--json'], { env }));
   assert.equal(result.code, 0);

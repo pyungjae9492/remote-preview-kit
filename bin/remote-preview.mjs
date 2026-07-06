@@ -132,7 +132,7 @@ function parseProxyArgs(argv) {
     else if (arg === '--token') options.authToken = next();
   }
   options.authToken ??= process.env.REMOTE_PREVIEW_AUTH_PROXY_TOKEN;
-  if (!options.upstreamPort || !options.authToken) throw usage('auth-proxy requires --upstream-port and --token');
+  if (!options.upstreamPort || !options.authToken) throw usage('auth-proxy requires --upstream-port and token');
   return options;
 }
 
@@ -402,8 +402,7 @@ async function startAuthProxy(options) {
 
 function previewToken(options) {
   if (options.authToken) return options.authToken;
-  if (process.env.REMOTE_PREVIEW_TOKEN) return process.env.REMOTE_PREVIEW_TOKEN;
-  if (options.auth) return randomBytes(24).toString('base64url');
+  if (options.auth) return process.env.REMOTE_PREVIEW_TOKEN || randomBytes(24).toString('base64url');
   return null;
 }
 
