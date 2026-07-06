@@ -212,6 +212,35 @@ test('auto-detects a responsive localhost dev server when port is omitted', asyn
   assert.match(payload.url, /^https:\/\/.+\.trycloudflare\.com$/);
 });
 
+test('auto-detect skips macOS AirTunes on port 5000', async () => {
+  const airTunes = http.createServer((request, response) => {
+    response.writeHead(403, {
+      'content-length': '0',
+      server: 'AirTunes/950.7.1',
+      'x-apple-processingtime': '0',
+    });
+    response.end();
+  });
+  await new Promise((resolveListen, rejectListen) => {
+    airTunes.once('error', rejectListen);
+    airTunes.listen(0, '127.0.0.1', resolveListen);
+  });
+  try {
+    const airTunesPort = airTunes.address().port;
+    let detectedPort;
+    const result = await withHttpServer(0, (port) => {
+      detectedPort = port;
+      return run(['--provider', 'cloudflared', '--public', '--json'], {
+        env: fixtureEnv({ REMOTE_PREVIEW_PORTS: `${airTunesPort},${port}` }),
+      });
+    });
+    assert.equal(result.code, 0);
+    assert.equal(JSON.parse(result.stdout).port, detectedPort);
+  } finally {
+    await new Promise((resolveClose) => airTunes.close(resolveClose));
+  }
+});
+
 test('auto-detect reports tried ports when no localhost dev server responds', async () => {
   const result = await run(['--provider', 'cloudflared', '--public', '--json'], {
     env: fixtureEnv({ REMOTE_PREVIEW_PORTS: '6553' }),

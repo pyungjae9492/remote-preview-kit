@@ -246,7 +246,7 @@ async function probeLocalhost(port, timeoutMs) {
       timeout: timeoutMs,
     }, (response) => {
       response.resume();
-      finish(true);
+      finish(!ignoredLocalhostResponse(response));
     });
     request.on('timeout', () => {
       request.destroy();
@@ -257,6 +257,11 @@ async function probeLocalhost(port, timeoutMs) {
     });
     request.end();
   });
+}
+
+function ignoredLocalhostResponse(response) {
+  const server = String(response.headers.server ?? '').toLowerCase();
+  return server.includes('airtunes') || Object.keys(response.headers).some((name) => name.startsWith('x-apple-'));
 }
 
 async function resolveLocalPort(options) {
