@@ -492,8 +492,10 @@ async function resolveCommand(provider) {
   for (const dir of paths) {
     const exact = join(dir, provider);
     if (await canExecute(exact)) return { command: exact, args: [], fake: false };
-    const fake = join(dir, `fake-${provider}.mjs`);
-    if (await canExecute(fake)) return { command: process.execPath, args: [fake], fake: true };
+    if (process.env.REMOTE_PREVIEW_FIXTURE_RUN === '1') {
+      const fake = join(dir, `fake-${provider}.mjs`);
+      if (await canExecute(fake)) return { command: process.execPath, args: [fake], fake: true };
+    }
   }
   return null;
 }
@@ -732,9 +734,9 @@ function runAuthProxy(options) {
       return;
     }
     const requestUrl = new URL(request.url, 'http://127.0.0.1');
-    if (requestUrl.searchParams.get(AUTH_QUERY)) {
+    if (requestUrl.searchParams.has(AUTH_QUERY)) {
       requestUrl.searchParams.delete(AUTH_QUERY);
-      response.setHeader('set-cookie', `${AUTH_COOKIE}=${encodeURIComponent(options.authToken)}; HttpOnly; SameSite=Lax; Path=/`);
+      response.setHeader('set-cookie', `${AUTH_COOKIE}=${encodeURIComponent(options.authToken)}; HttpOnly; Secure; SameSite=Lax; Path=/`);
       request.url = `${requestUrl.pathname}${requestUrl.search}`;
     }
     proxyHttp(request, response, options.upstreamPort);
@@ -783,7 +785,7 @@ function proxyHttp(request, response, port) {
     port,
     path: request.url,
     method: request.method,
-    headers: { ...request.headers, host: `localhost:${port}` },
+    headers: upstreamHeaders(request.headers, port),
   }, (upstream) => {
     response.writeHead(upstream.statusCode ?? 502, upstream.headers);
     upstream.pipe(response);
@@ -801,7 +803,7 @@ function proxyUpgrade(request, socket, head, port) {
     port,
     path: request.url,
     method: request.method,
-    headers: { ...request.headers, host: `localhost:${port}` },
+    headers: upstreamHeaders(request.headers, port),
   });
   proxy.on('upgrade', (response, proxySocket, proxyHead) => {
     socket.write(`HTTP/${response.httpVersion} ${response.statusCode} ${response.statusMessage}\r\n`);
@@ -813,6 +815,21 @@ function proxyUpgrade(request, socket, head, port) {
   });
   proxy.on('error', () => socket.destroy());
   proxy.end();
+}
+
+function upstreamHeaders(headers, port) {
+  const next = { ...headers, host: `localhost:${port}` };
+  delete next['x-remote-preview-token'];
+  const cookie = withoutCookie(next.cookie, AUTH_COOKIE);
+  if (cookie) next.cookie = cookie;
+  else delete next.cookie;
+  return next;
+}
+
+function withoutCookie(header, name) {
+  if (!header) return null;
+  const kept = String(header).split(';').map((part) => part.trim()).filter((part) => part && !part.startsWith(`${name}=`));
+  return kept.length ? kept.join('; ') : null;
 }
 
 async function notify(result, options) {

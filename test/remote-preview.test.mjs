@@ -367,6 +367,7 @@ test('auth token proxy blocks requests until token sets cookie', async () => {
       const login = await requestLocal(payload.port, '/?remote_preview_token=secret-token');
       assert.equal(login.statusCode, 200);
       assert.equal(login.body, 'ok /');
+      assert.match(login.headers['set-cookie'][0], /;\s*Secure\b/);
       const cookie = login.headers['set-cookie'][0].split(';')[0];
 
       const allowed = await requestLocal(payload.port, '/', { cookie });
@@ -411,6 +412,46 @@ test('auth token proxy uses localhost host header for upstream requests', async 
     const login = await requestLocal(payload.port, '/?remote_preview_token=secret-token');
     assert.equal(login.statusCode, 200);
     assert.equal(login.body, `host localhost:${port}`);
+  } finally {
+    if (payload?.authProxyPid) stopProcessGroup(payload.authProxyPid);
+    await new Promise((resolveClose) => server.close(resolveClose));
+  }
+});
+
+test('auth token proxy does not forward preview credentials upstream', async () => {
+  let seenHeaders;
+  const server = http.createServer((request, response) => {
+    seenHeaders = request.headers;
+    response.writeHead(200, { 'content-type': 'text/plain' });
+    response.end('ok');
+  });
+  await new Promise((resolveListen, rejectListen) => {
+    server.once('error', rejectListen);
+    server.listen(0, '127.0.0.1', resolveListen);
+  });
+  let payload;
+  try {
+    const { port } = server.address();
+    const result = await run([
+      '--port',
+      String(port),
+      '--provider',
+      'cloudflared',
+      '--public',
+      '--json',
+      '--auth-token',
+      'secret-token',
+    ], { env: fixtureEnv() });
+    assert.equal(result.code, 0);
+    payload = JSON.parse(result.stdout);
+
+    const login = await requestLocal(payload.port, '/?remote_preview_token=secret-token', {
+      cookie: 'theme=dark; remote_preview_token=secret-token',
+      'x-remote-preview-token': 'secret-token',
+    });
+    assert.equal(login.statusCode, 200);
+    assert.equal(seenHeaders.cookie, 'theme=dark');
+    assert.equal(seenHeaders['x-remote-preview-token'], undefined);
   } finally {
     if (payload?.authProxyPid) stopProcessGroup(payload.authProxyPid);
     await new Promise((resolveClose) => server.close(resolveClose));
@@ -516,6 +557,14 @@ test('ngrok prefers Forwarding HTTPS URL', async () => {
 test('missing provider binary exits 67', async () => {
   const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '500'], {
     env: { PATH: '/usr/bin:/bin', ...env },
+  }));
+  assert.equal(result.code, 67);
+  assert.equal(JSON.parse(result.stdout).error.code, 'PROVIDER_MISSING');
+});
+
+test('fake provider fixture is ignored outside fixture mode', async () => {
+  const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '500'], {
+    env: { ...env, PATH: `${fixtures}:${dirname(process.execPath)}:/usr/bin:/bin` },
   }));
   assert.equal(result.code, 67);
   assert.equal(JSON.parse(result.stdout).error.code, 'PROVIDER_MISSING');
