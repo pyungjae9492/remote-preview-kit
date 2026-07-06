@@ -714,12 +714,8 @@ function runAuthProxy(options) {
     const requestUrl = new URL(request.url, 'http://127.0.0.1');
     if (requestUrl.searchParams.get(AUTH_QUERY)) {
       requestUrl.searchParams.delete(AUTH_QUERY);
-      response.writeHead(302, {
-        'set-cookie': `${AUTH_COOKIE}=${encodeURIComponent(options.authToken)}; HttpOnly; SameSite=Lax; Path=/`,
-        location: `${requestUrl.pathname}${requestUrl.search}`,
-      });
-      response.end();
-      return;
+      response.setHeader('set-cookie', `${AUTH_COOKIE}=${encodeURIComponent(options.authToken)}; HttpOnly; SameSite=Lax; Path=/`);
+      request.url = `${requestUrl.pathname}${requestUrl.search}`;
     }
     proxyHttp(request, response, options.upstreamPort);
   });

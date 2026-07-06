@@ -127,8 +127,8 @@ remote-preview --provider cloudflared --public --auth
 remote-preview --provider cloudflared --public --auth-token "$REMOTE_PREVIEW_TOKEN"
 ```
 
-`--auth` generates a token and appends it to the returned URL. The first request
-sets an HttpOnly cookie and redirects to the same URL without the token query.
+`--auth` generates a token and appends it to the returned URL. Token requests
+also set an HttpOnly cookie, so the same browser can later use the clean URL.
 Requests without the token or cookie receive `401`. This is link-token access
 control, not identity auth; anyone who gets the token URL can use it until you
 restart the preview with a new token.

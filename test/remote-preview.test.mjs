@@ -269,7 +269,8 @@ test('auth token proxy blocks requests until token sets cookie', async () => {
       assert.equal(blocked.statusCode, 401);
 
       const login = await requestLocal(payload.port, '/?remote_preview_token=secret-token');
-      assert.equal(login.statusCode, 302);
+      assert.equal(login.statusCode, 200);
+      assert.equal(login.body, 'ok /');
       const cookie = login.headers['set-cookie'][0].split(';')[0];
 
       const allowed = await requestLocal(payload.port, '/', { cookie });
