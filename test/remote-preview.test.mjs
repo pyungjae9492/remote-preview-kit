@@ -119,6 +119,19 @@ function stopProcessGroup(pid) {
   }
 }
 
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function wait(ms) {
+  await new Promise((resolveWait) => setTimeout(resolveWait, ms));
+}
+
 test('help exits 0 and names remote-preview', async () => {
   const result = await run(['--help']);
   assert.equal(result.code, 0);
@@ -327,6 +340,33 @@ test('cloudflared parses trycloudflare URL and stays alive', async () => {
   assert.equal(payload.provider, 'cloudflared');
   assert.match(payload.url, /^https:\/\/.+\.trycloudflare\.com$/);
   assert.equal(payload.cleanup, `kill ${payload.pid}`);
+});
+
+test('real provider process keeps running after URL is returned', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'remote-preview-provider-'));
+  const provider = join(dir, 'cloudflared');
+  let payload;
+  await writeFile(provider, `#!/usr/bin/env node
+process.stdout.write('Visit https://lifetime.trycloudflare.com\\n');
+const fail = () => process.exit(13);
+process.stdout.on('error', fail);
+process.stderr.on('error', fail);
+setInterval(() => process.stderr.write('heartbeat\\n'), 10);
+process.on('SIGTERM', () => process.exit(0));
+`);
+  await chmod(provider, 0o755);
+  try {
+    const result = await withServer(0, (port, env) => run(['--port', String(port), '--provider', 'cloudflared', '--public', '--json', '--timeout-ms', '5000'], {
+      env: { ...env, PATH: `${dir}:${process.env.PATH ?? ''}` },
+    }));
+    assert.equal(result.code, 0);
+    payload = JSON.parse(result.stdout);
+    await wait(300);
+    assert.equal(processAlive(payload.pid), true);
+  } finally {
+    if (payload?.pid) stopProcessGroup(payload.pid);
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('ngrok prefers Forwarding HTTPS URL', async () => {

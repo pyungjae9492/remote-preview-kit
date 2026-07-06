@@ -4,9 +4,10 @@
 
 import { spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { access, readFile } from 'node:fs/promises';
-import { constants as fsConstants } from 'node:fs';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { closeSync, constants as fsConstants, openSync } from 'node:fs';
 import http from 'node:http';
+import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
@@ -526,18 +527,15 @@ async function runSpawnProvider(provider, options) {
   const resolved = await resolveCommand(provider);
   if (!resolved) throw appError('PROVIDER_MISSING', `${provider} was not found on PATH; run remote-preview setup --provider ${provider}`, EXIT.PROVIDER_MISSING, options);
 
-  const child = spawn(resolved.command, [...resolved.args, ...providerArgs(provider, options.port)], {
-    cwd: process.cwd(),
-    env: process.env,
-    shell: false,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const providerProcess = await spawnProvider(resolved, provider, options);
+  const { child, logDir, logPath } = providerProcess;
 
   let output = '';
   let settled = false;
+  let poller;
 
   const cleanup = () => {
-    if (!child.killed) child.kill('SIGTERM');
+    killProvider(child);
   };
   const onSignal = () => {
     cleanup();
@@ -551,6 +549,8 @@ async function runSpawnProvider(provider, options) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (poller) clearInterval(poller);
+      if (logDir) rm(logDir, { recursive: true, force: true }).catch(() => {});
       process.off('SIGINT', onSignal);
       process.off('SIGTERM', onSignal);
       fn(value);
@@ -572,7 +572,7 @@ async function runSpawnProvider(provider, options) {
         port: options.port,
         public: true,
         pid: child.pid ?? null,
-        cleanup: child.pid ? `kill ${child.pid}` : null,
+        cleanup: child.pid ? providerCleanup(child.pid, resolved.fake) : null,
       };
       if (resolved.fake) {
         child.stdout.destroy();
@@ -581,15 +581,20 @@ async function runSpawnProvider(provider, options) {
         child.once('close', () => finish(resolve, result));
         return;
       } else {
-        child.stdout.destroy();
-        child.stderr.destroy();
-        child.unref();
+        finish(resolve, result);
       }
-      finish(resolve, result);
     };
 
-    child.stdout.on('data', onData);
-    child.stderr.on('data', onData);
+    if (resolved.fake) {
+      child.stdout.on('data', onData);
+      child.stderr.on('data', onData);
+    } else {
+      poller = setInterval(async () => {
+        try {
+          onData(await readFile(logPath, 'utf8'));
+        } catch {}
+      }, 50);
+    }
     child.on('error', (error) => {
       if (error.code === 'ENOENT') finish(reject, appError('PROVIDER_MISSING', `${provider} was not found on PATH; run remote-preview setup --provider ${provider}`, EXIT.PROVIDER_MISSING, options));
       else finish(reject, appError('PROVIDER_EARLY_EXIT', error.message, EXIT.PROVIDER_EARLY_EXIT, options));
@@ -605,7 +610,7 @@ async function runSpawnProvider(provider, options) {
           port: options.port,
           public: true,
           pid: child.pid ?? null,
-          cleanup: child.pid ? `kill ${child.pid}` : null,
+          cleanup: child.pid ? providerCleanup(child.pid, resolved.fake) : null,
         });
         return;
       }
@@ -616,6 +621,49 @@ async function runSpawnProvider(provider, options) {
       finish(reject, appError('PROVIDER_EARLY_EXIT', `${provider} exited before printing a URL${code === null ? '' : ` (exit ${code})`}`, EXIT.PROVIDER_EARLY_EXIT, options));
     });
   });
+}
+
+async function spawnProvider(resolved, provider, options) {
+  const args = [...resolved.args, ...providerArgs(provider, options.port)];
+  if (resolved.fake) {
+    return {
+      child: spawn(resolved.command, args, {
+        cwd: process.cwd(),
+        env: process.env,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+    };
+  }
+  const logDir = await mkdtemp(join(tmpdir(), 'remote-preview-provider-'));
+  const logPath = join(logDir, `${provider}.log`);
+  const logFd = openSync(logPath, 'a');
+  try {
+    const child = spawn(resolved.command, args, {
+      cwd: process.cwd(),
+      detached: true,
+      env: process.env,
+      shell: false,
+      stdio: ['ignore', logFd, logFd],
+    });
+    child.unref();
+    return { child, logDir, logPath };
+  } finally {
+    closeSync(logFd);
+  }
+}
+
+function providerCleanup(pid, fake) {
+  return fake ? `kill ${pid}` : `kill -TERM -${pid}`;
+}
+
+function killProvider(child) {
+  if (!child.pid) return;
+  try {
+    process.kill(-child.pid, 'SIGTERM');
+  } catch {
+    if (!child.killed) child.kill('SIGTERM');
+  }
 }
 
 async function runProvider(options) {
