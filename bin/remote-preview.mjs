@@ -509,7 +509,7 @@ function providerArgs(provider, port) {
 function extractUrl(provider, text) {
   if (provider === 'cloudflared') {
     const preferred = text.match(/https:\/\/[^\s"'<>]+\.trycloudflare\.com\b/);
-    if (preferred) return preferred[0];
+    return preferred?.[0] ?? null;
   }
   if (provider === 'ngrok') {
     for (const line of text.split(/\r?\n/)) {

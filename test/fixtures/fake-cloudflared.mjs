@@ -11,6 +11,7 @@ if (process.env.FAKE_CLOUDFLARED_MODE === 'silent') {
   process.exit(0);
 } else {
   console.error('2026-07-04 INF Requesting new quick Tunnel on trycloudflare.com...');
+  console.error('2026-07-04 INF You agree to the Cloudflare terms: https://www.cloudflare.com/website-terms/');
   console.log('Your quick Tunnel has been created! Visit it at:');
   console.log('https://agent-preview.trycloudflare.com');
   setInterval(() => {}, 1000);
