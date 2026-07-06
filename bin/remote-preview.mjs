@@ -23,6 +23,10 @@ const RISKY_PORTS = new Set([
 ]);
 
 const PROVIDERS = new Set(['auto', 'codespaces', 'cloudflared', 'ngrok']);
+const COMMON_PORTS = Object.freeze([
+  5173, 3000, 3001, 3002, 3003, 3004, 4173, 4321, 5000, 5174, 8000, 8080, 8787,
+]);
+const AUTO_DETECT_TIMEOUT_MS = 300;
 
 function help() {
   return `remote-preview
@@ -31,6 +35,9 @@ Expose a localhost dev server through an existing preview provider.
 
 Usage:
   remote-preview [--port <port>|--url <http://localhost:port>] [options]
+
+If --port and --url are omitted, common localhost dev ports are scanned and
+the first HTTP-responsive server is exposed.
 
 Options:
   --provider <auto|codespaces|cloudflared|ngrok>  Provider to use
@@ -82,7 +89,6 @@ function parseArgs(argv) {
   if (!PROVIDERS.has(options.provider)) throw usage(`unsupported provider: ${options.provider}`);
   if (options.url && options.port) throw usage('use either --port or --url, not both');
   if (options.url) options.port = portFromLocalUrl(options.url);
-  if (!options.port) options.port = 3000;
   if (options.notifyCmd && /\s/.test(options.notifyCmd)) {
     throw appError('NOTIFY_INVALID', '--notify-cmd must be one program path without whitespace', EXIT.NOTIFY_FAILED, options);
   }
@@ -174,29 +180,67 @@ function guard(options) {
   }
 }
 
+function autoDetectPorts() {
+  const raw = process.env.REMOTE_PREVIEW_PORTS;
+  if (!raw) return COMMON_PORTS;
+  const ports = raw.split(',').map((value) => value.trim()).filter(Boolean).map(parsePort);
+  if (ports.length === 0) throw usage('REMOTE_PREVIEW_PORTS must include at least one port');
+  return [...new Set(ports)];
+}
+
+async function probeLocalhost(port, timeoutMs) {
+  return await new Promise((resolveProbe) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolveProbe(value);
+    };
+    const request = http.request({
+      host: '127.0.0.1',
+      port,
+      path: '/',
+      method: 'GET',
+      timeout: timeoutMs,
+    }, (response) => {
+      response.resume();
+      finish(true);
+    });
+    request.on('timeout', () => {
+      request.destroy();
+      finish(false);
+    });
+    request.on('error', () => {
+      finish(false);
+    });
+    request.end();
+  });
+}
+
+async function resolveLocalPort(options) {
+  if (options.port) return;
+  const ports = autoDetectPorts();
+  const timeoutMs = Math.min(options.timeoutMs, AUTO_DETECT_TIMEOUT_MS);
+  for (const port of ports) {
+    if (await probeLocalhost(port, timeoutMs)) {
+      options.port = port;
+      return;
+    }
+  }
+  throw appError(
+    'UPSTREAM_UNAVAILABLE',
+    `no localhost dev server found; tried ${ports.join(', ')}; pass --port or --url`,
+    EXIT.USAGE,
+    options,
+  );
+}
+
 async function assertLocalReady(options) {
   if (options.dryRun) return;
   if (options.provider === 'codespaces') return;
   if (process.env.REMOTE_PREVIEW_SKIP_READINESS === '1') return;
-  await new Promise((resolve, reject) => {
-    const request = http.request({
-      host: '127.0.0.1',
-      port: options.port,
-      path: '/',
-      method: 'GET',
-      timeout: Math.min(options.timeoutMs, 2000),
-    }, (response) => {
-      response.resume();
-      resolve();
-    });
-    request.on('timeout', () => {
-      request.destroy(appError('UPSTREAM_UNAVAILABLE', `localhost:${options.port} did not respond`, EXIT.USAGE, options));
-    });
-    request.on('error', () => {
-      reject(appError('UPSTREAM_UNAVAILABLE', `localhost:${options.port} did not respond`, EXIT.USAGE, options));
-    });
-    request.end();
-  });
+  if (await probeLocalhost(options.port, Math.min(options.timeoutMs, 2000))) return;
+  throw appError('UPSTREAM_UNAVAILABLE', `localhost:${options.port} did not respond`, EXIT.USAGE, options);
 }
 
 function codespacesUrl(port) {
@@ -367,6 +411,7 @@ async function runSpawnProvider(provider, options) {
 }
 
 async function runProvider(options) {
+  await resolveLocalPort(options);
   guard(options);
   await assertLocalReady(options);
   if (options.provider === 'codespaces') return await runCodespaces(options);

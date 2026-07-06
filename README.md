@@ -42,7 +42,7 @@ npm run dev
 Then expose the dev server:
 
 ```sh
-remote-preview --port 3000 --provider cloudflared --public
+remote-preview --provider cloudflared --public
 ```
 
 The first non-empty line is the URL:
@@ -54,7 +54,18 @@ https://example.trycloudflare.com
 If you do not install the binary, run the same command through Node:
 
 ```sh
-node bin/remote-preview.mjs --port 3000 --provider cloudflared --public
+node bin/remote-preview.mjs --provider cloudflared --public
+```
+
+When `--port` and `--url` are omitted, the CLI scans common HTTP dev-server
+ports such as `5173`, `3000`, `3001`, `4173`, `4321`, `8000`, and `8080`, then
+exposes the first responsive localhost server. If more than one dev server is
+running, pass `--port` or `--url` explicitly.
+
+To customize the scan order:
+
+```sh
+REMOTE_PREVIEW_PORTS=3000,5173 remote-preview --provider cloudflared --public
 ```
 
 ## Overview
@@ -78,7 +89,7 @@ It is intentionally small:
 Machine-readable output:
 
 ```sh
-remote-preview --port 3000 --provider cloudflared --public --json
+remote-preview --provider cloudflared --public --json
 ```
 
 Use a localhost URL instead of a port:
@@ -90,7 +101,7 @@ remote-preview --url http://127.0.0.1:5173 --provider cloudflared --public
 Notify another process:
 
 ```sh
-remote-preview --port 3000 --provider cloudflared --public \
+remote-preview --provider cloudflared --public \
   --notify-cmd node --notify-arg ./scripts/send-preview.mjs
 ```
 
@@ -102,7 +113,7 @@ argv item. The command runs without shell interpolation.
 ### Codespaces
 
 ```sh
-remote-preview --port 3000 --provider codespaces
+remote-preview --provider codespaces
 ```
 
 Codespaces support is read-only. The CLI derives the forwarded URL from
@@ -113,7 +124,7 @@ yourself.
 ### cloudflared
 
 ```sh
-remote-preview --port 3000 --provider cloudflared --public
+remote-preview --provider cloudflared --public
 ```
 
 `cloudflared` creates a public Quick Tunnel, so `--public` is required.
@@ -121,7 +132,7 @@ remote-preview --port 3000 --provider cloudflared --public
 ### ngrok
 
 ```sh
-remote-preview --port 3000 --provider ngrok --public
+remote-preview --provider ngrok --public
 ```
 
 `ngrok` creates a public endpoint, so `--public` is required.
@@ -148,7 +159,8 @@ Remote upstream URLs are rejected.
 For Codex mobile, Claude mobile, or Telegram Hermes-style agents:
 
 1. Confirm the dev server is already running.
-2. Run `remote-preview` with `--json` when the agent needs structured output.
+2. Run `remote-preview` without a port for common dev servers, or pass `--port`
+   when multiple servers are running.
 3. Return the `url` field or the first stdout line to the user.
 4. Keep the cleanup command/PID in the task notes.
 

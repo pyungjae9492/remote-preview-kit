@@ -10,17 +10,19 @@ remote coding environment.
 
 ## Workflow
 
-1. Confirm the app's dev server is already running and identify its port.
+1. Confirm the app's dev server is already running. The CLI auto-detects common
+   HTTP dev-server ports when `--port` and `--url` are omitted.
 2. Prefer private platform forwarding when available:
    ```sh
-   remote-preview --port 3000 --provider codespaces --json
+   remote-preview --provider codespaces --json
    ```
 3. For public review URLs, require explicit public intent:
    ```sh
-   remote-preview --port 3000 --provider cloudflared --public --json
+   remote-preview --provider cloudflared --public --json
    ```
-4. Return only the preview URL to the user unless they need diagnostics.
-5. Record the cleanup command or PID in your task notes.
+4. If multiple dev servers are running, pass the intended `--port` or `--url`.
+5. Return only the preview URL to the user unless they need diagnostics.
+6. Record the cleanup command or PID in your task notes.
 
 ## Safety Rules
 
@@ -38,14 +40,14 @@ remote coding environment.
 Use `--json` for automation. The success object includes:
 
 ```json
-{"ok":true,"provider":"cloudflared","url":"https://example.trycloudflare.com","port":3000,"public":true,"pid":1234,"cleanup":"kill 1234"}
+{"ok":true,"provider":"cloudflared","url":"https://example.trycloudflare.com","port":5173,"public":true,"pid":1234,"cleanup":"kill 1234"}
 ```
 
 For Telegram Hermes-style notification hooks, pass the URL through
 `REMOTE_PREVIEW_URL`:
 
 ```sh
-remote-preview --port 3000 --provider cloudflared --public \
+remote-preview --provider cloudflared --public \
   --notify-cmd node --notify-arg ./scripts/send-preview.mjs
 ```
 

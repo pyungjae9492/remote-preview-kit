@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -43,6 +44,25 @@ function fixtureEnv(extra = {}) {
 
 async function withServer(port, fn) {
   return await fn(port || 4173, { REMOTE_PREVIEW_SKIP_READINESS: '1' });
+}
+
+async function withHttpServer(port, fn) {
+  const server = http.createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'text/plain' });
+    response.end(`ok ${request.url}`);
+  });
+  await new Promise((resolveListen, rejectListen) => {
+    server.once('error', rejectListen);
+    server.listen(port, '127.0.0.1', resolveListen);
+  });
+  const address = server.address();
+  try {
+    return await fn(address.port);
+  } finally {
+    await new Promise((resolveClose) => {
+      server.close(resolveClose);
+    });
+  }
 }
 
 test('help exits 0 and names remote-preview', async () => {
@@ -108,6 +128,32 @@ test('public providers require --public', async () => {
   const result = await run(['--port', '3000', '--provider', 'cloudflared', '--json']);
   assert.equal(result.code, 66);
   assert.equal(JSON.parse(result.stdout).error.code, 'PUBLIC_REQUIRED');
+});
+
+test('auto-detects a responsive localhost dev server when port is omitted', async () => {
+  let detectedPort;
+  const result = await withHttpServer(0, (port) => {
+    detectedPort = port;
+    return run(['--provider', 'cloudflared', '--public', '--json'], {
+      env: fixtureEnv({ REMOTE_PREVIEW_PORTS: String(port) }),
+    });
+  });
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.provider, 'cloudflared');
+  assert.equal(payload.port, detectedPort);
+  assert.match(payload.url, /^https:\/\/.+\.trycloudflare\.com$/);
+});
+
+test('auto-detect reports tried ports when no localhost dev server responds', async () => {
+  const result = await run(['--provider', 'cloudflared', '--public', '--json'], {
+    env: fixtureEnv({ REMOTE_PREVIEW_PORTS: '6553' }),
+  });
+  assert.equal(result.code, 64);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.error.code, 'UPSTREAM_UNAVAILABLE');
+  assert.equal(payload.port, null);
+  assert.match(payload.error.message, /tried 6553/);
 });
 
 test('cloudflared parses trycloudflare URL and stays alive', async () => {
