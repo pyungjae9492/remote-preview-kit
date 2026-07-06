@@ -378,6 +378,45 @@ test('auth token proxy blocks requests until token sets cookie', async () => {
   });
 });
 
+test('auth token proxy uses localhost host header for upstream requests', async () => {
+  const server = http.createServer((request, response) => {
+    if (request.headers.host?.startsWith('localhost:')) {
+      response.writeHead(200, { 'content-type': 'text/plain' });
+      response.end(`host ${request.headers.host}`);
+      return;
+    }
+    response.writeHead(307, { location: '/' });
+    response.end('/');
+  });
+  await new Promise((resolveListen, rejectListen) => {
+    server.once('error', rejectListen);
+    server.listen(0, '127.0.0.1', resolveListen);
+  });
+  let payload;
+  try {
+    const { port } = server.address();
+    const result = await run([
+      '--port',
+      String(port),
+      '--provider',
+      'cloudflared',
+      '--public',
+      '--json',
+      '--auth-token',
+      'secret-token',
+    ], { env: fixtureEnv() });
+    assert.equal(result.code, 0);
+    payload = JSON.parse(result.stdout);
+
+    const login = await requestLocal(payload.port, '/?remote_preview_token=secret-token');
+    assert.equal(login.statusCode, 200);
+    assert.equal(login.body, `host localhost:${port}`);
+  } finally {
+    if (payload?.authProxyPid) stopProcessGroup(payload.authProxyPid);
+    await new Promise((resolveClose) => server.close(resolveClose));
+  }
+});
+
 test('REMOTE_PREVIEW_TOKEN is used only when auth is requested', async () => {
   let plain;
   let protectedPreview;

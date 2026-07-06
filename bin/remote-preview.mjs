@@ -783,7 +783,7 @@ function proxyHttp(request, response, port) {
     port,
     path: request.url,
     method: request.method,
-    headers: { ...request.headers, host: `127.0.0.1:${port}` },
+    headers: { ...request.headers, host: `localhost:${port}` },
   }, (upstream) => {
     response.writeHead(upstream.statusCode ?? 502, upstream.headers);
     upstream.pipe(response);
@@ -801,7 +801,7 @@ function proxyUpgrade(request, socket, head, port) {
     port,
     path: request.url,
     method: request.method,
-    headers: { ...request.headers, host: `127.0.0.1:${port}` },
+    headers: { ...request.headers, host: `localhost:${port}` },
   });
   proxy.on('upgrade', (response, proxySocket, proxyHead) => {
     socket.write(`HTTP/${response.httpVersion} ${response.statusCode} ${response.statusMessage}\r\n`);
